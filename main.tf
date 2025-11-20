@@ -2,6 +2,16 @@ module "vpc" {
   source = "./modules/vpc"
 }
 
+# ACM Certificate (optional - comment out if no domain)
+# module "acm" {
+#   source = "./modules/acm"
+#   
+#   domain_name = "yourdomain.com"
+#   subject_alternative_names = ["*.yourdomain.com"]
+#   
+#   tags = local.common_tags
+# }
+
 module "alb" {
   source = "./modules/alb"
   
@@ -9,6 +19,7 @@ module "alb" {
   vpc_id            = module.vpc.vpc_id
   subnet_ids        = module.vpc.public_subnets
   security_group_ids = [module.vpc.default_security_group_id]
+  # certificate_arn   = module.acm.certificate_arn  # Uncomment when using ACM
   
   tags = local.common_tags
 }
@@ -41,15 +52,67 @@ module "iam" {
   tags = local.common_tags
 }
 
-module "ecs" {
+# Platform Backend ECS (FastAPI)
+module "platform_backend" {
   source = "./modules/ecs-fargate"
   
-  name_prefix        = local.name_prefix
-  container_image    = "nginx:latest"
-  subnet_ids         = module.vpc.private_subnets
-  security_group_ids = [module.vpc.default_security_group_id]
-  execution_role_arn = module.iam.role_arns["ecs-execution-role"]
-  aws_region         = var.aws_region
+  name_prefix           = local.name_prefix
+  cluster_name          = "platform"
+  service_name          = "backend"
+  container_image       = "${aws_ecr_repository.backend.repository_url}:latest"
+  container_port        = 8000
+  cpu                   = "512"
+  memory                = "1024"
+  desired_count         = 2
+  
+  vpc_id                = module.vpc.vpc_id
+  subnet_ids            = module.vpc.private_subnets
+  security_group_ids    = [module.vpc.default_security_group_id]
+  alb_target_group_arn  = module.alb.backend_target_group_arn
+  execution_role_arn    = module.iam.role_arns["ecs-execution-role"]
+  
+  enable_autoscaling    = true
+  min_capacity          = 1
+  max_capacity          = 5
+  cpu_target_value      = 50
+  
+  environment_variables = [
+    {
+      name  = "ENV"
+      value = var.environment
+    },
+    {
+      name  = "AWS_REGION"
+      value = var.aws_region
+    }
+  ]
+  
+  tags = local.common_tags
+}
+
+# User Services ECS Cluster (for user deployments)
+module "user_services" {
+  source = "./modules/ecs-fargate"
+  
+  name_prefix           = local.name_prefix
+  cluster_name          = "user-services"
+  service_name          = "default-app"
+  container_image       = "nginx:latest"
+  container_port        = 80
+  cpu                   = "256"
+  memory                = "512"
+  desired_count         = 1
+  
+  vpc_id                = module.vpc.vpc_id
+  subnet_ids            = module.vpc.private_subnets
+  security_group_ids    = [module.vpc.default_security_group_id]
+  alb_target_group_arn  = module.alb.target_group_arn
+  execution_role_arn    = module.iam.role_arns["ecs-execution-role"]
+  
+  enable_autoscaling    = true
+  min_capacity          = 1
+  max_capacity          = 3
+  cpu_target_value      = 70
   
   tags = local.common_tags
 }
@@ -127,6 +190,17 @@ module "websocket_api" {
   name_prefix           = local.name_prefix
   lambda_function_arn   = module.lambda.lambda_function_arns["websocket"]
   lambda_function_name  = module.lambda.lambda_function_names["websocket"]
+  
+  tags = local.common_tags
+}
+
+# ECR Repository for backend
+resource "aws_ecr_repository" "backend" {
+  name = "${local.name_prefix}-backend"
+  
+  image_scanning_configuration {
+    scan_on_push = true
+  }
   
   tags = local.common_tags
 }

@@ -17,3 +17,8 @@ output "target_group_arn" {
   description = "Target group ARN"
   value       = aws_lb_target_group.main.arn
 }
+
+output "backend_target_group_arn" {
+  description = "Backend target group ARN"
+  value       = aws_lb_target_group.backend.arn
+}

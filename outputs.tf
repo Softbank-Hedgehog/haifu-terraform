@@ -18,9 +18,34 @@ output "alb_dns_name" {
   value       = module.alb.load_balancer_dns_name
 }
 
-output "ecs_cluster_id" {
-  description = "ECS cluster ID"
-  value       = module.ecs.cluster_id
+output "alb_http_endpoint" {
+  description = "ALB HTTP endpoint"
+  value       = "http://${module.alb.load_balancer_dns_name}"
+}
+
+output "alb_https_endpoint" {
+  description = "ALB HTTPS endpoint (if certificate configured)"
+  value       = "https://${module.alb.load_balancer_dns_name}"
+}
+
+output "platform_cluster_id" {
+  description = "Platform ECS cluster ID"
+  value       = module.platform_backend.cluster_id
+}
+
+output "user_services_cluster_id" {
+  description = "User services ECS cluster ID"
+  value       = module.user_services.cluster_id
+}
+
+output "platform_service_name" {
+  description = "Platform backend service name"
+  value       = module.platform_backend.service_name
+}
+
+output "user_services_cluster_name" {
+  description = "User services cluster name"
+  value       = module.user_services.cluster_name
 }
 
 output "dynamodb_table_names" {
@@ -36,5 +61,10 @@ output "websocket_api_endpoint" {
 output "lambda_function_names" {
   description = "Lambda function names"
   value       = module.lambda.lambda_function_names
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL for backend"
+  value       = aws_ecr_repository.backend.repository_url
 }
 

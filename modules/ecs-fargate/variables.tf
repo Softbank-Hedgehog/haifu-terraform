@@ -3,22 +3,14 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "cpu" {
-  description = "CPU units for the task"
+variable "cluster_name" {
+  description = "ECS cluster name"
   type        = string
-  default     = "256"
 }
 
-variable "memory" {
-  description = "Memory for the task"
+variable "service_name" {
+  description = "ECS service name"
   type        = string
-  default     = "512"
-}
-
-variable "container_name" {
-  description = "Container name"
-  type        = string
-  default     = "app"
 }
 
 variable "container_image" {
@@ -29,13 +21,30 @@ variable "container_image" {
 variable "container_port" {
   description = "Container port"
   type        = number
-  default     = 80
+  default     = 8000
 }
 
 variable "desired_count" {
   description = "Desired number of tasks"
   type        = number
   default     = 1
+}
+
+variable "cpu" {
+  description = "CPU units for the task"
+  type        = string
+  default     = "512"
+}
+
+variable "memory" {
+  description = "Memory for the task"
+  type        = string
+  default     = "1024"
+}
+
+variable "vpc_id" {
+  description = "VPC ID"
+  type        = string
 }
 
 variable "subnet_ids" {
@@ -48,14 +57,8 @@ variable "security_group_ids" {
   type        = list(string)
 }
 
-variable "assign_public_ip" {
-  description = "Assign public IP"
-  type        = bool
-  default     = false
-}
-
-variable "target_group_arn" {
-  description = "Target group ARN"
+variable "alb_target_group_arn" {
+  description = "ALB target group ARN"
   type        = string
   default     = null
 }
@@ -71,14 +74,9 @@ variable "task_role_arn" {
   default     = null
 }
 
-variable "aws_region" {
-  description = "AWS region"
-  type        = string
-}
-
 variable "environment_variables" {
   description = "Environment variables"
-  type        = list(object({
+  type = list(object({
     name  = string
     value = string
   }))
@@ -88,25 +86,25 @@ variable "environment_variables" {
 variable "enable_autoscaling" {
   description = "Enable autoscaling"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "min_capacity" {
-  description = "Minimum capacity"
+  description = "Minimum capacity for autoscaling"
   type        = number
   default     = 1
 }
 
 variable "max_capacity" {
-  description = "Maximum capacity"
+  description = "Maximum capacity for autoscaling"
   type        = number
-  default     = 10
+  default     = 5
 }
 
 variable "cpu_target_value" {
   description = "CPU target value for autoscaling"
   type        = number
-  default     = 70
+  default     = 50
 }
 
 variable "tags" {
