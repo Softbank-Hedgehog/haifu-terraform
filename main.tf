@@ -54,6 +54,29 @@ module "ecs" {
   tags = local.common_tags
 }
 
+module "dynamodb" {
+  source = "./modules/dynamodb"
+  
+  name_prefix = local.name_prefix
+  
+  tables = [
+    {
+      name         = "deployment-status"
+      hash_key     = "deployment_id"
+      range_key    = ""
+      billing_mode = "PAY_PER_REQUEST"
+      attributes = [
+        {
+          name = "deployment_id"
+          type = "S"
+        }
+      ]
+    }
+  ]
+  
+  tags = local.common_tags
+}
+
 module "lambda" {
   source = "./modules/lambda"
   
@@ -79,6 +102,16 @@ module "lambda" {
       memory_size                   = 1024
       reserved_concurrent_executions = 0
       vpc_config                    = false
+    },
+    {
+      name                           = "websocket"
+      filename                      = "lambda-functions/websocket_lambda.zip"
+      handler                       = "websocket_lambda.handler"
+      runtime                       = "python3.11"
+      timeout                       = 60
+      memory_size                   = 512
+      reserved_concurrent_executions = 0
+      vpc_config                    = false
     }
   ]
   
@@ -88,10 +121,20 @@ module "lambda" {
   tags = local.common_tags
 }
 
-module "s3" {
-  source = "./modules/s3-cloudfront"
+module "websocket_api" {
+  source = "./modules/api-gateway-websocket"
   
-  name_prefix = local.name_prefix
-  tags        = local.common_tags
+  name_prefix           = local.name_prefix
+  lambda_function_arn   = module.lambda.lambda_function_arns["websocket"]
+  lambda_function_name  = module.lambda.lambda_function_names["websocket"]
+  
+  tags = local.common_tags
 }
+
+# module "s3" {
+#   source = "./modules/s3-cloudfront"
+#   
+#   name_prefix = local.name_prefix
+#   tags        = local.common_tags
+# }
 

@@ -49,6 +49,18 @@ resource "aws_iam_role_policy_attachment" "lambda_sqs" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSQSFullAccess"
 }
 
+# DynamoDB access policy
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+}
+
+# API Gateway access policy
+resource "aws_iam_role_policy_attachment" "lambda_apigw" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
+}
+
 # Lambda functions
 resource "aws_lambda_function" "functions" {
   count = length(var.lambdas)
