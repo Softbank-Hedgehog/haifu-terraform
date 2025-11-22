@@ -1,3 +1,6 @@
+# Get current AWS account ID
+data "aws_caller_identity" "current" {}
+
 module "vpc" {
   source = "./modules/vpc"
 }
@@ -45,7 +48,81 @@ module "iam" {
         ]
       })
       managed_policy_arns = ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"]
-      custom_policy_names = []
+      custom_policy_names = ["secrets-manager-access", "ecr-access"]
+    },
+    {
+      name                = "ecs-task-role"
+      assume_role_policy  = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Action = "sts:AssumeRole"
+            Effect = "Allow"
+            Principal = {
+              Service = "ecs-tasks.amazonaws.com"
+            }
+          }
+        ]
+      })
+      managed_policy_arns = []
+      custom_policy_names = ["secrets-manager-access", "dynamodb-access-v2"]
+    }
+  ]
+  
+  custom_policies = [
+    {
+      name = "secrets-manager-access"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Effect = "Allow"
+            Action = [
+              "secretsmanager:GetSecretValue",
+              "secretsmanager:DescribeSecret"
+            ]
+            Resource = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main*"
+          }
+        ]
+      })
+    },
+    {
+      name = "ecr-access"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Effect = "Allow"
+            Action = [
+              "ecr:GetAuthorizationToken",
+              "ecr:BatchCheckLayerAvailability",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchGetImage"
+            ]
+            Resource = "*"
+          }
+        ]
+      })
+    },
+    {
+      name = "dynamodb-access-v2"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Effect = "Allow"
+            Action = [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+              "dynamodb:DeleteItem",
+              "dynamodb:Query",
+              "dynamodb:Scan"
+            ]
+            Resource = "arn:aws:dynamodb:ap-northeast-2:${data.aws_caller_identity.current.account_id}:table/${local.name_prefix}-*"
+          }
+        ]
+      })
     }
   ]
   
@@ -70,6 +147,7 @@ module "platform_backend" {
   security_group_ids    = [module.vpc.default_security_group_id]
   alb_target_group_arn  = module.alb.backend_target_group_arn
   execution_role_arn    = module.iam.role_arns["ecs-execution-role"]
+  task_role_arn         = module.iam.role_arns["ecs-task-role"]
   
   enable_autoscaling    = true
   min_capacity          = 1
@@ -84,6 +162,49 @@ module "platform_backend" {
     {
       name  = "AWS_REGION"
       value = var.aws_region
+    }
+  ]
+  
+  secrets = [
+    {
+      name      = "ENVIRONMENT"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:ENVIRONMENT::"
+    },
+    {
+      name      = "GITHUB_CLIENT_ID"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:GITHUB_CLIENT_ID::"
+    },
+    {
+      name      = "GITHUB_CLIENT_SECRET"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:GITHUB_CLIENT_SECRET::"
+    },
+    {
+      name      = "JWT_SECRET_KEY"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:JWT_SECRET_KEY::"
+    },
+    {
+      name      = "JWT_ALGORITHM"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:JWT_ALGORITHM::"
+    },
+    {
+      name      = "JWT_EXPIRE_DAYS"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:JWT_EXPIRE_DAYS::"
+    },
+    {
+      name      = "FRONTEND_URL"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:FRONTEND_URL::"
+    },
+    {
+      name      = "DYNAMODB_PROJECTS_TABLE"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_PROJECTS_TABLE::"
+    },
+    {
+      name      = "DYNAMODB_SERVICES_TABLE"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_SERVICES_TABLE::"
+    },
+    {
+      name      = "PORT"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:PORT::"
     }
   ]
   
@@ -108,6 +229,7 @@ module "user_services" {
   security_group_ids    = [module.vpc.default_security_group_id]
   alb_target_group_arn  = module.alb.target_group_arn
   execution_role_arn    = module.iam.role_arns["ecs-execution-role"]
+  task_role_arn         = module.iam.role_arns["ecs-task-role"]
   
   enable_autoscaling    = true
   min_capacity          = 1
@@ -205,10 +327,46 @@ resource "aws_ecr_repository" "backend" {
   tags = local.common_tags
 }
 
-# module "s3" {
-#   source = "./modules/s3-cloudfront"
-#   
-#   name_prefix = local.name_prefix
-#   tags        = local.common_tags
-# }
+# Backend Pipeline
+module "backend_pipeline" {
+  source = "./modules/backend-pipeline"
+  
+  name_prefix = "${local.name_prefix}-backend"
+  
+  github_owner  = "Softbank-Hedgehog"
+  github_repo   = "haifu-server"
+  github_branch = "main"
+  
+  ecr_repository_uri = aws_ecr_repository.backend.repository_url
+  ecs_cluster_name   = module.platform_backend.cluster_name
+  ecs_service_name   = module.platform_backend.service_name
+  
+  tags = local.common_tags
+}
+
+# Frontend S3 + CloudFront
+module "frontend" {
+  source = "./modules/s3-cloudfront"
+  
+  name_prefix = "${local.name_prefix}-frontend"
+  tags        = local.common_tags
+}
+
+# Frontend Pipeline
+module "frontend_pipeline" {
+  source = "./modules/frontend-pipeline"
+  
+  name_prefix = "${local.name_prefix}-frontend"
+  
+  github_owner  = var.github_owner
+  github_repo   = var.github_repo
+  github_branch = var.github_branch
+  
+  s3_bucket_name             = module.frontend.bucket_name
+  cloudfront_distribution_id = module.frontend.cloudfront_distribution_id
+  backend_api_url           = "http://${module.alb.load_balancer_dns_name}/api"
+  websocket_api_url         = module.websocket_api.websocket_stage_url
+  
+  tags = local.common_tags
+}
 

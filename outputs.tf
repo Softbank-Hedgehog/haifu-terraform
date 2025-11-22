@@ -68,3 +68,18 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.backend.repository_url
 }
 
+output "frontend_website_url" {
+  description = "Frontend website URL"
+  value       = module.frontend.website_url
+}
+
+output "frontend_s3_bucket" {
+  description = "Frontend S3 bucket name"
+  value       = module.frontend.bucket_name
+}
+
+output "frontend_cloudfront_distribution_id" {
+  description = "Frontend CloudFront distribution ID"
+  value       = module.frontend.cloudfront_distribution_id
+}
+

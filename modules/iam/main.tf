@@ -18,6 +18,10 @@ resource "aws_iam_policy" "custom" {
   name   = "${var.name_prefix}-${var.custom_policies[count.index].name}"
   policy = var.custom_policies[count.index].policy
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   tags = var.tags
 }
 

@@ -83,6 +83,15 @@ variable "environment_variables" {
   default = []
 }
 
+variable "secrets" {
+  description = "Secrets from AWS Secrets Manager"
+  type = list(object({
+    name      = string
+    valueFrom = string
+  }))
+  default = []
+}
+
 variable "enable_autoscaling" {
   description = "Enable autoscaling"
   type        = bool
