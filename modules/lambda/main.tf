@@ -61,6 +61,35 @@ resource "aws_iam_role_policy_attachment" "lambda_apigw" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
 }
 
+# Bedrock access policy (for Agent Lambda)
+resource "aws_iam_policy" "lambda_bedrock" {
+  name        = "${var.name_prefix}-lambda-bedrock-policy"
+  description = "Allow Lambda to invoke Bedrock models"
+  
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+        ]
+      }
+    ]
+  })
+  
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.lambda_bedrock.arn
+}
+
 # Lambda functions
 resource "aws_lambda_function" "functions" {
   count = length(var.lambdas)
