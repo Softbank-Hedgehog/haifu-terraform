@@ -190,7 +190,7 @@ resource "aws_codebuild_project" "frontend" {
 
 # CodeStar Connection for GitHub
 resource "aws_codestarconnections_connection" "github" {
-  name          = "${var.name_prefix}-github"
+  name          = "haifu-dev-frontend-github"
   provider_type = "GitHub"
   
   tags = var.tags

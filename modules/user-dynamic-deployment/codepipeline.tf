@@ -1,15 +1,14 @@
-# Get current AWS account ID
-data "aws_caller_identity" "current" {}
-
 # S3 bucket for CodePipeline artifacts
-resource "aws_s3_bucket" "artifacts" {
-  bucket = "${var.name_prefix}-pipeline-artifacts"
+resource "aws_s3_bucket" "pipeline_artifacts" {
+  count  = var.github_repository != "" ? 1 : 0
+  bucket = "${var.name_prefix}-${var.service_name}-pipeline-artifacts"
   
   tags = var.tags
 }
 
-resource "aws_s3_bucket_versioning" "artifacts" {
-  bucket = aws_s3_bucket.artifacts.id
+resource "aws_s3_bucket_versioning" "pipeline_artifacts" {
+  count  = var.github_repository != "" ? 1 : 0
+  bucket = aws_s3_bucket.pipeline_artifacts[0].id
   versioning_configuration {
     status = "Enabled"
   }
@@ -17,7 +16,8 @@ resource "aws_s3_bucket_versioning" "artifacts" {
 
 # IAM role for CodePipeline
 resource "aws_iam_role" "codepipeline" {
-  name = "${var.name_prefix}-codepipeline-role"
+  count = var.github_repository != "" ? 1 : 0
+  name  = "${var.name_prefix}-${var.service_name}-codepipeline-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -36,8 +36,9 @@ resource "aws_iam_role" "codepipeline" {
 }
 
 resource "aws_iam_role_policy" "codepipeline" {
-  name = "${var.name_prefix}-codepipeline-policy"
-  role = aws_iam_role.codepipeline.id
+  count = var.github_repository != "" ? 1 : 0
+  name  = "${var.name_prefix}-${var.service_name}-codepipeline-policy"
+  role  = aws_iam_role.codepipeline[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -51,8 +52,8 @@ resource "aws_iam_role_policy" "codepipeline" {
           "s3:PutObject"
         ]
         Resource = [
-          aws_s3_bucket.artifacts.arn,
-          "${aws_s3_bucket.artifacts.arn}/*"
+          aws_s3_bucket.pipeline_artifacts[0].arn,
+          "${aws_s3_bucket.pipeline_artifacts[0].arn}/*"
         ]
       },
       {
@@ -73,24 +74,16 @@ resource "aws_iam_role_policy" "codepipeline" {
       {
         Effect = "Allow"
         Action = [
-          "iam:PassRole",
-          "iam:GetRole"
+          "iam:PassRole"
         ]
         Resource = "*"
       },
       {
         Effect = "Allow"
         Action = [
-          "application-autoscaling:*"
+          "secretsmanager:GetSecretValue"
         ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "codestar-connections:UseConnection"
-        ]
-        Resource = aws_codestarconnections_connection.github.arn
+        Resource = "arn:aws:secretsmanager:*:*:secret:github-token-${var.user_id}-${var.service_name}-*"
       }
     ]
   })
@@ -98,7 +91,8 @@ resource "aws_iam_role_policy" "codepipeline" {
 
 # IAM role for CodeBuild
 resource "aws_iam_role" "codebuild" {
-  name = "${var.name_prefix}-codebuild-role"
+  count = var.github_repository != "" ? 1 : 0
+  name  = "${var.name_prefix}-${var.service_name}-codebuild-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -117,8 +111,9 @@ resource "aws_iam_role" "codebuild" {
 }
 
 resource "aws_iam_role_policy" "codebuild" {
-  name = "${var.name_prefix}-codebuild-policy"
-  role = aws_iam_role.codebuild.id
+  count = var.github_repository != "" ? 1 : 0
+  name  = "${var.name_prefix}-${var.service_name}-codebuild-policy"
+  role  = aws_iam_role.codebuild[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -140,8 +135,8 @@ resource "aws_iam_role_policy" "codebuild" {
           "s3:PutObject"
         ]
         Resource = [
-          aws_s3_bucket.artifacts.arn,
-          "${aws_s3_bucket.artifacts.arn}/*"
+          aws_s3_bucket.pipeline_artifacts[0].arn,
+          "${aws_s3_bucket.pipeline_artifacts[0].arn}/*"
         ]
       },
       {
@@ -157,32 +152,16 @@ resource "aws_iam_role_policy" "codebuild" {
           "ecr:PutImage"
         ]
         Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ecs:UpdateService",
-          "ecs:DescribeServices",
-          "ecs:DescribeTaskDefinition",
-          "ecs:RegisterTaskDefinition"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "iam:PassRole"
-        ]
-        Resource = "*"
       }
     ]
   })
 }
 
 # CodeBuild project
-resource "aws_codebuild_project" "backend" {
-  name         = "${var.name_prefix}-build"
-  service_role = aws_iam_role.codebuild.arn
+resource "aws_codebuild_project" "user_service" {
+  count        = var.github_repository != "" ? 1 : 0
+  name         = "${var.name_prefix}-${var.service_name}-build"
+  service_role = aws_iam_role.codebuild[0].arn
 
   artifacts {
     type = "CODEPIPELINE"
@@ -195,51 +174,50 @@ resource "aws_codebuild_project" "backend" {
     privileged_mode            = true
 
     environment_variable {
-      name  = "ECR_REPOSITORY_URI"
-      value = var.ecr_repository_uri
-    }
-
-    environment_variable {
-      name  = "ECS_CLUSTER_NAME"
-      value = var.ecs_cluster_name
-    }
-
-    environment_variable {
-      name  = "ECS_SERVICE_NAME"
-      value = var.ecs_service_name
-    }
-
-    environment_variable {
       name  = "AWS_DEFAULT_REGION"
-      value = "ap-northeast-2"
+      value = data.aws_region.current.name
     }
 
+    environment_variable {
+      name  = "AWS_ACCOUNT_ID"
+      value = data.aws_caller_identity.current.account_id
+    }
 
+    environment_variable {
+      name  = "IMAGE_REPO_NAME"
+      value = aws_ecr_repository.user_service.name
+    }
+
+    dynamic "environment_variable" {
+      for_each = var.build_environment_variables
+      content {
+        name  = environment_variable.key
+        value = environment_variable.value
+      }
+    }
   }
 
   source {
     type = "CODEPIPELINE"
-    buildspec = "version: 0.2\nphases:\n  pre_build:\n    commands:\n      - echo Logging in to Amazon ECR...\n      - ECR_REGISTRY=$(echo $ECR_REPOSITORY_URI | cut -d'/' -f1)\n      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY\n      - REPOSITORY_URI=$ECR_REPOSITORY_URI\n      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)\n      - IMAGE_TAG=$${COMMIT_HASH:=latest}\n  build:\n    commands:\n      - echo Build started on `date`\n      - echo Building the Docker image...\n      - docker build -f Dockerfile -t $REPOSITORY_URI:latest .\n      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG\n  post_build:\n    commands:\n      - echo Build completed on `date`\n      - echo Pushing the Docker images...\n      - docker push $REPOSITORY_URI:latest\n      - docker push $REPOSITORY_URI:$IMAGE_TAG\n      - echo Writing image definitions file...\n      - printf '[{\"name\":\"backend\",\"imageUri\":\"%s\"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json\nartifacts:\n  files:\n    - imagedefinitions.json"
+    buildspec = templatefile("${path.module}/buildspec.yml", {
+      runtime           = var.runtime
+      install_commands  = var.install_commands
+      build_commands    = var.build_commands
+      start_command     = var.start_command
+    })
   }
-  
-  tags = var.tags
-}
-
-# CodeStar Connection for GitHub
-resource "aws_codestarconnections_connection" "github" {
-  name          = "${var.name_prefix}-github"
-  provider_type = "GitHub"
   
   tags = var.tags
 }
 
 # CodePipeline
-resource "aws_codepipeline" "backend" {
-  name     = "${var.name_prefix}-pipeline"
-  role_arn = aws_iam_role.codepipeline.arn
+resource "aws_codepipeline" "user_service" {
+  count    = var.github_repository != "" ? 1 : 0
+  name     = "${var.name_prefix}-${var.service_name}-pipeline"
+  role_arn = aws_iam_role.codepipeline[0].arn
 
   artifact_store {
-    location = aws_s3_bucket.artifacts.bucket
+    location = aws_s3_bucket.pipeline_artifacts[0].bucket
     type     = "S3"
   }
 
@@ -249,15 +227,16 @@ resource "aws_codepipeline" "backend" {
     action {
       name             = "Source"
       category         = "Source"
-      owner            = "AWS"
-      provider         = "CodeStarSourceConnection"
+      owner            = "ThirdParty"
+      provider         = "GitHub"
       version          = "1"
       output_artifacts = ["source_output"]
 
       configuration = {
-        ConnectionArn    = aws_codestarconnections_connection.github.arn
-        FullRepositoryId = "${var.github_owner}/${var.github_repo}"
-        BranchName       = var.github_branch
+        Owner      = var.github_owner
+        Repo       = var.github_repo
+        Branch     = var.github_branch
+        OAuthToken = "{{resolve:secretsmanager:github-token-${var.user_id}-${var.service_name}:SecretString:token}}"
       }
     }
   }
@@ -275,7 +254,7 @@ resource "aws_codepipeline" "backend" {
       version          = "1"
 
       configuration = {
-        ProjectName = aws_codebuild_project.backend.name
+        ProjectName = aws_codebuild_project.user_service[0].name
       }
     }
   }
@@ -293,7 +272,7 @@ resource "aws_codepipeline" "backend" {
 
       configuration = {
         ClusterName = var.ecs_cluster_name
-        ServiceName = var.ecs_service_name
+        ServiceName = aws_ecs_service.user_service.name
         FileName    = "imagedefinitions.json"
       }
     }

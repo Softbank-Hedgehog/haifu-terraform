@@ -194,10 +194,7 @@ module "platform_backend" {
       name      = "DYNAMODB_SERVICES_TABLE"
       valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_SERVICES_TABLE::"
     },
-    {
-      name      = "DYNAMODB_USERS_TABLE"
-      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_USERS_TABLE::"
-    },
+
     {
       name      = "PORT"
       valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:PORT::"
@@ -426,9 +423,9 @@ module "frontend_pipeline" {
   
   name_prefix = "${local.name_prefix}-frontend"
   
-  github_owner  = var.github_owner
-  github_repo   = var.github_repo
-  github_branch = var.github_branch
+  github_owner  = "Softbank-Hedgehog"
+  github_repo   = "haifu-client"
+  github_branch = "main"
   
   s3_bucket_name             = module.frontend.bucket_name
   cloudfront_distribution_id = module.frontend.cloudfront_distribution_id

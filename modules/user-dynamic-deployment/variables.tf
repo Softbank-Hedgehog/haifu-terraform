@@ -145,10 +145,19 @@ variable "github_branch" {
   default     = "main"
 }
 
-variable "github_connection_arn" {
-  description = "GitHub CodeStar connection ARN"
+variable "user_id" {
+  description = "User ID for resource naming"
   type        = string
-  default     = ""
+}
+
+variable "github_owner" {
+  description = "GitHub repository owner"
+  type        = string
+}
+
+variable "github_repo" {
+  description = "GitHub repository name"
+  type        = string
 }
 
 variable "artifacts_bucket_name" {
@@ -167,6 +176,12 @@ variable "codebuild_role_arn" {
   description = "CodeBuild service role ARN"
   type        = string
   default     = ""
+}
+
+variable "image_tag" {
+  description = "Docker image tag"
+  type        = string
+  default     = "latest"
 }
 
 variable "tags" {

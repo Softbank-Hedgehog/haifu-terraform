@@ -32,3 +32,13 @@ output "service_endpoint" {
   description = "Service endpoint path"
   value       = "/${var.service_name}"
 }
+
+output "codepipeline_name" {
+  description = "CodePipeline name"
+  value       = var.github_repository != "" ? aws_codepipeline.user_service[0].name : null
+}
+
+output "codebuild_project_name" {
+  description = "CodeBuild project name"
+  value       = var.github_repository != "" ? aws_codebuild_project.user_service[0].name : null
+}

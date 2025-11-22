@@ -26,7 +26,7 @@ resource "aws_ecs_task_definition" "user_service" {
   container_definitions = jsonencode([
     {
       name      = var.service_name
-      image     = "${aws_ecr_repository.user_service.repository_url}:latest"
+      image     = "${aws_ecr_repository.user_service.repository_url}:${var.image_tag}"
       cpu       = var.cpu
       memory    = var.memory
       essential = true
@@ -73,7 +73,7 @@ resource "aws_lb_target_group" "user_service" {
   health_check {
     enabled             = true
     healthy_threshold   = 2
-    interval            = 30
+    interval            = 15     # 30초 → 15초로 단축
     matcher             = "200"
     path                = var.health_check_path
     port                = "traffic-port"
@@ -124,7 +124,24 @@ resource "aws_ecs_service" "user_service" {
     container_port   = var.container_port
   }
 
+  force_new_deployment = true
+  
+  # 새 Task Definition 즉시 적용
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+  
+  deployment_configuration {
+    maximum_percent         = 200
+    minimum_healthy_percent = 0   # 50 → 0으로 변경 (더 빠른 배포)
+  }
+  
   depends_on = [aws_lb_listener_rule.user_service]
+  
+  lifecycle {
+    ignore_changes = [desired_count, task_definition]
+  }
   
   tags = var.tags
 }
