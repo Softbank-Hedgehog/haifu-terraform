@@ -15,6 +15,18 @@ variable "default_root_object" {
   default     = "index.html"
 }
 
+variable "domain_name" {
+  description = "Custom domain name for CloudFront"
+  type        = string
+  default     = ""
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN for custom domain"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

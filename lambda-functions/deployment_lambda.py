@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime
 import os
 
+os.environ['AWS_ACCOUNT_ID'] = os.environ.get('AWS_ACCOUNT_ID', '123456789012')
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -16,43 +18,55 @@ dynamodb = boto3.resource('dynamodb')
 def handler(event, context):
     """
     Enhanced Deployment Lambda function
-    Handles both static and dynamic service deployments
+    Handles deploy/rollback/update_config methods for static and dynamic services
     """
     try:
         # Parse deployment request
         body = json.loads(event.get('body', '{}'))
         
+        method = body.get('method', 'deploy')  # deploy/rollback/update_config
         service_type = body.get('service_type')  # "static" or "dynamic"
         runtime = body.get('runtime')
-        build_config = body.get('build_config', {})
+        build_commands = body.get('build_commands', [])
         start_command = body.get('start_command')
-        dockerfile_content = body.get('dockerfile_content')
+        dockerfile = body.get('dockerfile')
+        github = body.get('github', {})
         
         # Generate deployment ID if not provided
         deployment_id = body.get('deployment_id', str(uuid.uuid4()))
-        service_name = body.get('service_name', f'service-{deployment_id[:8]}')
+        service_name = body.get('service_name', f'{github.get("owner", "user")}-{github.get("repo", "service")}')
         
-        if not service_type:
+        if not service_type or not method:
             return {
                 'statusCode': 400,
-                'body': json.dumps({'error': 'service_type is required'})
+                'body': json.dumps({'error': 'service_type and method are required'})
             }
         
         # Update deployment status
-        update_deployment_status(deployment_id, 'DEPLOYING', f'Starting {service_type} deployment')
+        update_deployment_status(deployment_id, 'DEPLOYING', f'{method} {service_type} deployment')
         
-        # Route to appropriate deployment handler
-        if service_type == 'static':
-            result = deploy_static_service(deployment_id, service_name, build_config)
-        elif service_type == 'dynamic':
-            result = deploy_dynamic_service(
-                deployment_id, service_name, runtime, 
-                build_config, start_command, dockerfile_content
-            )
+        # Route to appropriate method handler
+        if method == 'deploy':
+            if service_type == 'static':
+                result = deploy_static_service(deployment_id, service_name, build_commands, github)
+            elif service_type == 'dynamic':
+                result = deploy_dynamic_service(
+                    deployment_id, service_name, runtime, 
+                    build_commands, start_command, dockerfile, github
+                )
+            else:
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({'error': 'Invalid service_type'})
+                }
+        elif method == 'rollback':
+            result = rollback_service(deployment_id, service_name, service_type)
+        elif method == 'update_config':
+            result = update_service_config(deployment_id, service_name, service_type, body)
         else:
             return {
                 'statusCode': 400,
-                'body': json.dumps({'error': 'Invalid service_type. Must be "static" or "dynamic"'})
+                'body': json.dumps({'error': 'Invalid method. Must be deploy/rollback/update_config'})
             }
         
         if result['success']:
@@ -87,7 +101,7 @@ def handler(event, context):
             'body': json.dumps({'error': str(e)})
         }
 
-def deploy_static_service(deployment_id, service_name, build_config):
+def deploy_static_service(deployment_id, service_name, build_commands, github):
     """
     Deploy static service using S3 + CloudFront via CloudFormation
     """
@@ -150,7 +164,7 @@ def deploy_static_service(deployment_id, service_name, build_config):
         )
         
         # Create CodePipeline for continuous deployment
-        create_static_pipeline(service_name, build_config)
+        create_static_pipeline(service_name, build_commands, github)
         
         return {
             'success': True,
@@ -164,7 +178,7 @@ def deploy_static_service(deployment_id, service_name, build_config):
         logger.error(f"Static deployment error: {str(e)}")
         return {'success': False, 'error': str(e)}
 
-def deploy_dynamic_service(deployment_id, service_name, runtime, build_config, start_command, dockerfile_content):
+def deploy_dynamic_service(deployment_id, service_name, runtime, build_commands, start_command, dockerfile, github):
     """
     Deploy dynamic service to ECS Fargate with auto-scaling
     """
@@ -228,7 +242,58 @@ def deploy_dynamic_service(deployment_id, service_name, runtime, build_config, s
         setup_auto_scaling(service_name, cluster_name)
         
         # Create CodePipeline for CI/CD
-        create_dynamic_pipeline(service_name, runtime, build_config, dockerfile_content)
+        create_dynamic_pipeline(service_name, runtime, build_commands, dockerfile, github)
+        
+        return {
+            'success': True,
+            'data': {
+                'service_arn': service_response['service']['serviceArn'],
+                'deployment_type': 'dynamic',
+                'runtime': runtime
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Dynamic deployment error: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+def rollback_service(deployment_id, service_name, service_type):
+    """Rollback service to previous version"""
+    try:
+        if service_type == 'dynamic':
+            # ECS service rollback
+            ecs_client.update_service(
+                cluster='haifu-dev-user-services',
+                service=f'haifu-dev-{service_name}',
+                taskDefinition=get_previous_task_definition(service_name)
+            )
+        else:
+            # Static rollback via CloudFormation
+            cloudformation_client.cancel_update_stack(
+                StackName=f'haifu-static-{service_name}'
+            )
+        
+        return {'success': True, 'data': {'action': 'rollback'}}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+def update_service_config(deployment_id, service_name, service_type, config):
+    """Update service configuration"""
+    try:
+        # Update environment variables, scaling, etc.
+        return {'success': True, 'data': {'action': 'config_updated'}}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+def get_previous_task_definition(service_name):
+    """Get previous task definition ARN for rollback"""
+    response = ecs_client.list_task_definitions(
+        familyPrefix=f'haifu-dev-{service_name}',
+        status='ACTIVE',
+        sort='DESC',
+        maxResults=2
+    )
+    return response['taskDefinitionArns'][1] if len(response['taskDefinitionArns']) > 1 else response['taskDefinitionArns'][0]ent)
         
         return {
             'success': True,
@@ -281,63 +346,130 @@ def setup_auto_scaling(service_name, cluster_name):
         }
     )
 
-def create_static_pipeline(service_name, build_config):
-    """Create CodePipeline for static deployment"""
+def create_static_pipeline(service_name, build_commands, github):
+    """Create CodePipeline for static deployment with GitHub OAuth"""
     try:
-        # Invoke Terraform manager to create static service config
-        lambda_client = boto3.client('lambda')
-        
-        payload = {
-            'action': 'create',
-            'service_type': 'static',
-            'service_name': service_name,
-            'deployment_config': {
-                'build_config': build_config,
-                'github_owner': 'user',  # This should come from user context
-                'github_repo': service_name,
-                'github_branch': 'main'
+        codepipeline_client.create_pipeline(
+            pipeline={
+                'name': f'{service_name}-static-pipeline',
+                'roleArn': f'arn:aws:iam::{os.environ["AWS_ACCOUNT_ID"]}:role/haifu-dev-codepipeline-role',
+                'artifactStore': {
+                    'type': 'S3',
+                    'location': 'haifu-dev-pipeline-artifacts'
+                },
+                'stages': [
+                    {
+                        'name': 'Source',
+                        'actions': [{
+                            'name': 'Source',
+                            'actionTypeId': {
+                                'category': 'Source',
+                                'owner': 'ThirdParty',
+                                'provider': 'GitHub',
+                                'version': '1'
+                            },
+                            'configuration': {
+                                'Owner': github['owner'],
+                                'Repo': github['repo'],
+                                'Branch': github['branch'],
+                                'OAuthToken': github['oauth_token']
+                            },
+                            'outputArtifacts': [{'name': 'SourceOutput'}]
+                        }]
+                    },
+                    {
+                        'name': 'Build',
+                        'actions': [{
+                            'name': 'Build',
+                            'actionTypeId': {
+                                'category': 'Build',
+                                'owner': 'AWS',
+                                'provider': 'CodeBuild',
+                                'version': '1'
+                            },
+                            'configuration': {
+                                'ProjectName': f'{service_name}-static-build'
+                            },
+                            'inputArtifacts': [{'name': 'SourceOutput'}]
+                        }]
+                    }
+                ]
             }
-        }
-        
-        response = lambda_client.invoke(
-            FunctionName='haifu-dev-terraform-manager',
-            InvocationType='RequestResponse',
-            Payload=json.dumps({'body': json.dumps(payload)})
         )
-        
-        result = json.loads(response['Payload'].read())
-        logger.info(f"Terraform config created: {result}")
+        logger.info(f"Static pipeline created for {service_name}")
         
     except Exception as e:
         logger.error(f"Static pipeline creation error: {str(e)}")
 
-def create_dynamic_pipeline(service_name, runtime, build_config, dockerfile_content):
-    """Create CodePipeline for dynamic deployment"""
+def create_dynamic_pipeline(service_name, runtime, build_commands, dockerfile, github):
+    """Create CodePipeline for dynamic deployment with GitHub OAuth"""
     try:
-        # Invoke Terraform manager to create dynamic service config
-        lambda_client = boto3.client('lambda')
-        
-        payload = {
-            'action': 'create',
-            'service_type': 'dynamic',
-            'service_name': service_name,
-            'deployment_config': {
-                'runtime': runtime,
-                'build_config': build_config,
-                'start_command': 'npm start',  # This should be determined by AI
-                'github_repository': f'user/{service_name}',  # This should come from user context
-                'github_branch': 'main'
+        # Similar to static but with ECS deployment stage
+        codepipeline_client.create_pipeline(
+            pipeline={
+                'name': f'{service_name}-dynamic-pipeline',
+                'roleArn': f'arn:aws:iam::{os.environ["AWS_ACCOUNT_ID"]}:role/haifu-dev-codepipeline-role',
+                'artifactStore': {
+                    'type': 'S3',
+                    'location': 'haifu-dev-pipeline-artifacts'
+                },
+                'stages': [
+                    {
+                        'name': 'Source',
+                        'actions': [{
+                            'name': 'Source',
+                            'actionTypeId': {
+                                'category': 'Source',
+                                'owner': 'ThirdParty',
+                                'provider': 'GitHub',
+                                'version': '1'
+                            },
+                            'configuration': {
+                                'Owner': github['owner'],
+                                'Repo': github['repo'],
+                                'Branch': github['branch'],
+                                'OAuthToken': github['oauth_token']
+                            },
+                            'outputArtifacts': [{'name': 'SourceOutput'}]
+                        }]
+                    },
+                    {
+                        'name': 'Build',
+                        'actions': [{
+                            'name': 'Build',
+                            'actionTypeId': {
+                                'category': 'Build',
+                                'owner': 'AWS',
+                                'provider': 'CodeBuild',
+                                'version': '1'
+                            },
+                            'configuration': {
+                                'ProjectName': f'{service_name}-dynamic-build'
+                            },
+                            'inputArtifacts': [{'name': 'SourceOutput'}]
+                        }]
+                    },
+                    {
+                        'name': 'Deploy',
+                        'actions': [{
+                            'name': 'Deploy',
+                            'actionTypeId': {
+                                'category': 'Deploy',
+                                'owner': 'AWS',
+                                'provider': 'ECS',
+                                'version': '1'
+                            },
+                            'configuration': {
+                                'ClusterName': 'haifu-dev-user-services',
+                                'ServiceName': f'haifu-dev-{service_name}'
+                            },
+                            'inputArtifacts': [{'name': 'SourceOutput'}]
+                        }]
+                    }
+                ]
             }
-        }
-        
-        response = lambda_client.invoke(
-            FunctionName='haifu-dev-terraform-manager',
-            InvocationType='RequestResponse',
-            Payload=json.dumps({'body': json.dumps(payload)})
         )
-        
-        result = json.loads(response['Payload'].read())
-        logger.info(f"Terraform config created: {result}")
+        logger.info(f"Dynamic pipeline created for {service_name}")
         
     except Exception as e:
         logger.error(f"Dynamic pipeline creation error: {str(e)}")

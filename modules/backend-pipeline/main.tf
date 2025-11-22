@@ -66,7 +66,22 @@ resource "aws_iam_role_policy" "codepipeline" {
       {
         Effect = "Allow"
         Action = [
-          "ecs:UpdateService"
+          "ecs:*"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:PassRole",
+          "iam:GetRole"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "application-autoscaling:*"
         ]
         Resource = "*"
       },
@@ -147,7 +162,16 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect = "Allow"
         Action = [
           "ecs:UpdateService",
-          "ecs:DescribeServices"
+          "ecs:DescribeServices",
+          "ecs:DescribeTaskDefinition",
+          "ecs:RegisterTaskDefinition"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:PassRole"
         ]
         Resource = "*"
       }
@@ -195,7 +219,7 @@ resource "aws_codebuild_project" "backend" {
 
   source {
     type = "CODEPIPELINE"
-    buildspec = "version: 0.2\nphases:\n  pre_build:\n    commands:\n      - echo Logging in to Amazon ECR...\n      - ECR_REGISTRY=$(echo $ECR_REPOSITORY_URI | cut -d'/' -f1)\n      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY\n      - REPOSITORY_URI=$ECR_REPOSITORY_URI\n      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)\n      - IMAGE_TAG=$${COMMIT_HASH:=latest}\n  build:\n    commands:\n      - echo Build started on `date`\n      - echo Building the Docker image...\n      - docker build -f Dockerfile -t $REPOSITORY_URI:$IMAGE_TAG .\n      - docker tag $REPOSITORY_URI:$IMAGE_TAG $REPOSITORY_URI:latest\n  post_build:\n    commands:\n      - echo Build completed on `date`\n      - echo Pushing the Docker images...\n      - docker push $REPOSITORY_URI:$IMAGE_TAG\n      - docker push $REPOSITORY_URI:latest\n      - echo Writing image definitions file...\n      - printf '[{\"name\":\"haifu-server\",\"imageUri\":\"%s\"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json\nartifacts:\n  files:\n    - imagedefinitions.json"
+    buildspec = "version: 0.2\nphases:\n  pre_build:\n    commands:\n      - echo Logging in to Amazon ECR...\n      - ECR_REGISTRY=$(echo $ECR_REPOSITORY_URI | cut -d'/' -f1)\n      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY\n      - REPOSITORY_URI=$ECR_REPOSITORY_URI\n      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)\n      - IMAGE_TAG=$${COMMIT_HASH:=latest}\n  build:\n    commands:\n      - echo Build started on `date`\n      - echo Building the Docker image...\n      - docker build -f Dockerfile -t $REPOSITORY_URI:latest .\n      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG\n  post_build:\n    commands:\n      - echo Build completed on `date`\n      - echo Pushing the Docker images...\n      - docker push $REPOSITORY_URI:latest\n      - docker push $REPOSITORY_URI:$IMAGE_TAG\n      - echo Writing image definitions file...\n      - printf '[{\"name\":\"backend\",\"imageUri\":\"%s\"}]' $REPOSITORY_URI:latest > imagedefinitions.json\nartifacts:\n  files:\n    - imagedefinitions.json"
   }
   
   tags = var.tags
@@ -247,10 +271,30 @@ resource "aws_codepipeline" "backend" {
       owner            = "AWS"
       provider         = "CodeBuild"
       input_artifacts  = ["source_output"]
+      output_artifacts = ["build_output"]
       version          = "1"
 
       configuration = {
         ProjectName = aws_codebuild_project.backend.name
+      }
+    }
+  }
+
+  stage {
+    name = "Deploy"
+
+    action {
+      name            = "Deploy"
+      category        = "Deploy"
+      owner           = "AWS"
+      provider        = "ECS"
+      input_artifacts = ["build_output"]
+      version         = "1"
+
+      configuration = {
+        ClusterName = var.ecs_cluster_name
+        ServiceName = var.ecs_service_name
+        FileName    = "imagedefinitions.json"
       }
     }
   }

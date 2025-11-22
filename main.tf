@@ -5,15 +5,12 @@ module "vpc" {
   source = "./modules/vpc"
 }
 
-# ACM Certificate (optional - comment out if no domain)
-# module "acm" {
-#   source = "./modules/acm"
-#   
-#   domain_name = "yourdomain.com"
-#   subject_alternative_names = ["*.yourdomain.com"]
-#   
-#   tags = local.common_tags
-# }
+# CloudFront용 ACM 인증서 (us-east-1)
+data "aws_acm_certificate" "cloudfront" {
+  provider = aws.us-east-1
+  domain   = "haifu.cloud"
+  statuses = ["ISSUED"]
+}
 
 module "alb" {
   source = "./modules/alb"
@@ -112,14 +109,9 @@ module "iam" {
           {
             Effect = "Allow"
             Action = [
-              "dynamodb:GetItem",
-              "dynamodb:PutItem",
-              "dynamodb:UpdateItem",
-              "dynamodb:DeleteItem",
-              "dynamodb:Query",
-              "dynamodb:Scan"
+              "dynamodb:*"
             ]
-            Resource = "arn:aws:dynamodb:ap-northeast-2:${data.aws_caller_identity.current.account_id}:table/${local.name_prefix}-*"
+            Resource = "*"
           }
         ]
       })
@@ -203,6 +195,10 @@ module "platform_backend" {
       valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_SERVICES_TABLE::"
     },
     {
+      name      = "DYNAMODB_USERS_TABLE"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_USERS_TABLE::"
+    },
+    {
       name      = "PORT"
       valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:PORT::"
     }
@@ -243,7 +239,7 @@ module "user_services" {
 module "dynamodb" {
   source = "./modules/dynamodb"
   
-  name_prefix = local.name_prefix
+  name_prefix = null
   
   tables = [
     {
@@ -259,14 +255,71 @@ module "dynamodb" {
       ]
     },
     {
-      name         = "service-registry"
-      hash_key     = "service_name"
+      name         = "haifu-projects"
+      hash_key     = "project_id"
       range_key    = ""
       billing_mode = "PAY_PER_REQUEST"
       attributes = [
         {
-          name = "service_name"
+          name = "project_id"
           type = "S"
+        },
+        {
+          name = "user_id"
+          type = "S"
+        }
+      ]
+      global_secondary_indexes = [
+        {
+          name     = "user-index"
+          hash_key = "user_id"
+          projection_type = "ALL"
+        }
+      ]
+    },
+    {
+      name         = "haifu-services"
+      hash_key     = "service_id"
+      range_key    = ""
+      billing_mode = "PAY_PER_REQUEST"
+      attributes = [
+        {
+          name = "service_id"
+          type = "S"
+        },
+        {
+          name = "project_id"
+          type = "S"
+        }
+      ]
+      global_secondary_indexes = [
+        {
+          name     = "project-index"
+          hash_key = "project_id"
+          projection_type = "ALL"
+        }
+      ]
+    },
+    {
+      name         = "users"
+      hash_key     = "user_id"
+      range_key    = ""
+      billing_mode = "PAY_PER_REQUEST"
+      attributes = [
+        {
+          name = "user_id"
+          type = "S"
+        },
+        {
+          name = "github_id"
+          type = "S"
+        }
+      ]
+      global_secondary_indexes = [
+        {
+          name     = "github-index"
+          hash_key = "github_id"
+          projection_type = "ALL"
         }
       ]
     }
@@ -361,8 +414,10 @@ module "backend_pipeline" {
 module "frontend" {
   source = "./modules/s3-cloudfront"
   
-  name_prefix = "${local.name_prefix}-frontend"
-  tags        = local.common_tags
+  name_prefix     = "${local.name_prefix}-frontend"
+  domain_name     = "haifu.cloud"
+  certificate_arn = data.aws_acm_certificate.cloudfront.arn
+  tags            = local.common_tags
 }
 
 # Frontend Pipeline
