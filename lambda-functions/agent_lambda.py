@@ -1,275 +1,245 @@
 """
 Agent Lambda Function
-S3 스냅샷 기반 Repository 분석 → Cost 추정 (이중 구조)
+기능:
+1. General Chat (일반 대화)
+2. Deployment Analysis (정적/동적 배포 판단)
+3. Cost Estimation (기존: 비용 견적)
 """
 import json
 import boto3
 import os
 from typing import Dict, Any, List, Optional
 
-
 # =============================================================================
-# AWS App Runner 스펙 상수 (haifu-server/app/schemas/service.py와 동일)
+# AWS App Runner 스펙 상수 (기존 유지)
 # =============================================================================
-
 RUNTIMES = [
     "PYTHON_3", "NODEJS_16", "NODEJS_18", "NODEJS_20",
     "JAVA_11", "JAVA_17", "DOTNET_6", "GO_1", "PHP_81", "RUBY_31"
 ]
-
 CPU_OPTIONS = ["1 vCPU", "2 vCPU", "4 vCPU"]
-
 MEMORY_OPTIONS = ["2 GB", "3 GB", "4 GB", "6 GB", "8 GB", "10 GB", "12 GB"]
-
 CPU_MEMORY_COMBINATIONS = {
     "1 vCPU": ["2 GB", "3 GB", "4 GB"],
     "2 vCPU": ["4 GB", "6 GB", "8 GB"],
     "4 vCPU": ["8 GB", "10 GB", "12 GB"]
 }
 
-
 # =============================================================================
-# S3 Service (Repository 정보 로드)
+# 1. S3 Service (기존 유지)
 # =============================================================================
-
 class S3SnapshotLoader:
     """S3에서 소스 스냅샷 로드"""
-    
     def __init__(self):
         self.s3_client = boto3.client('s3')
     
     def list_files(self, bucket: str, s3_prefix: str, max_files: int = 50) -> List[str]:
-        """S3 스냅샷 파일 목록 조회"""
         try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=bucket,
-                Prefix=s3_prefix,
-                MaxKeys=max_files
-            )
-            
+            response = self.s3_client.list_objects_v2(Bucket=bucket, Prefix=s3_prefix, MaxKeys=max_files)
             files = []
             for obj in response.get('Contents', []):
                 key = obj['Key']
-                if not key.endswith('/'):  # 디렉토리 제외
+                if not key.endswith('/'):
                     files.append(key)
-            
             return files
         except Exception as e:
             print(f"Error listing S3 files: {e}")
             return []
     
     def read_file(self, bucket: str, key: str, max_size: int = 50000) -> Optional[str]:
-        """S3 파일 읽기"""
         try:
             response = self.s3_client.get_object(Bucket=bucket, Key=key)
             body = response['Body'].read(max_size)
-            
             try:
                 return body.decode('utf-8')
             except UnicodeDecodeError:
-                return None  # 바이너리 파일
+                return None
         except Exception as e:
             print(f"Error reading S3 file {key}: {e}")
             return None
     
     def load_snapshot(self, bucket: str, s3_prefix: str) -> Dict[str, str]:
-        """스냅샷에서 주요 파일들 로드"""
         important_files = [
             'package.json', 'requirements.txt', 'pyproject.toml',
             'pom.xml', 'build.gradle', 'go.mod',
-            'Dockerfile', 'docker-compose.yml', 'README.md'
+            'Dockerfile', 'docker-compose.yml', 'README.md',
+            'index.html', 'vercel.json', 'next.config.js' # 정적 분석용 추가
         ]
-        
         all_files = self.list_files(bucket, s3_prefix)
         file_contents = {}
-        
         for file_key in all_files:
             file_name = file_key.split('/')[-1]
             if file_name in important_files:
                 content = self.read_file(bucket, file_key)
                 if content:
                     file_contents[file_name] = content
-        
-        print(f"Loaded {len(file_contents)} files from S3")
         return file_contents
 
-
 # =============================================================================
-# Repository Analyzer (Step 1)
+# 2. Repository Analyzer (기존 유지)
 # =============================================================================
-
 class RepositoryAnalyzer:
-    """Repository 분석 (간단한 패턴 매칭 기반)"""
-    
+    """Repository 분석"""
     def analyze(self, file_contents: Dict[str, str]) -> Dict[str, Any]:
-        """
-        파일 내용으로부터 프레임워크, 언어, 런타임 감지
-        
-        Returns:
-            {
-                "framework": "fastapi",
-                "language": "python",
-                "runtime": "PYTHON_3",
-                "has_dockerfile": true,
-                "dependencies": [...]
-            }
-        """
         result = {
             "framework": "unknown",
             "language": "unknown",
             "runtime": None,
-            "has_dockerfile": False,
-            "has_docker_compose": False,
+            "has_dockerfile": "Dockerfile" in file_contents,
             "dependencies": []
         }
         
-        # Dockerfile 확인
-        if "Dockerfile" in file_contents:
-            result["has_dockerfile"] = True
-        
-        if "docker-compose.yml" in file_contents or "docker-compose.yaml" in file_contents:
-            result["has_docker_compose"] = True
-        
-        # JavaScript/TypeScript 감지
+        # JavaScript/TypeScript
         if "package.json" in file_contents:
             result["language"] = "javascript"
-            package_json = file_contents["package.json"].lower()
-            
-            if "react" in package_json:
-                result["framework"] = "react"
-                result["runtime"] = "NODEJS_18"
-            elif "next" in package_json:
-                result["framework"] = "nextjs"
-                result["runtime"] = "NODEJS_20"
-            elif "vue" in package_json:
-                result["framework"] = "vue"
-                result["runtime"] = "NODEJS_18"
-            elif "express" in package_json:
-                result["framework"] = "express"
-                result["runtime"] = "NODEJS_18"
-            else:
-                result["framework"] = "nodejs"
-                result["runtime"] = "NODEJS_18"
+            pkg = file_contents["package.json"].lower()
+            if "react" in pkg: result.update({"framework": "react", "runtime": "NODEJS_18"})
+            elif "next" in pkg: result.update({"framework": "nextjs", "runtime": "NODEJS_20"})
+            elif "vue" in pkg: result.update({"framework": "vue", "runtime": "NODEJS_18"})
+            elif "express" in pkg: result.update({"framework": "express", "runtime": "NODEJS_18"})
+            else: result.update({"framework": "nodejs", "runtime": "NODEJS_18"})
         
-        # Python 감지
+        # Python
         elif "requirements.txt" in file_contents:
             result["language"] = "python"
-            requirements = file_contents["requirements.txt"].lower()
+            req = file_contents["requirements.txt"].lower()
+            if "fastapi" in req: result.update({"framework": "fastapi", "runtime": "PYTHON_3"})
+            elif "django" in req: result.update({"framework": "django", "runtime": "PYTHON_3"})
+            elif "flask" in req: result.update({"framework": "flask", "runtime": "PYTHON_3"})
+            else: result.update({"framework": "python", "runtime": "PYTHON_3"})
             
-            if "fastapi" in requirements:
-                result["framework"] = "fastapi"
-                result["runtime"] = "PYTHON_3"
-            elif "django" in requirements:
-                result["framework"] = "django"
-                result["runtime"] = "PYTHON_3"
-            elif "flask" in requirements:
-                result["framework"] = "flask"
-                result["runtime"] = "PYTHON_3"
-            else:
-                result["framework"] = "python"
-                result["runtime"] = "PYTHON_3"
-        
-        elif "pyproject.toml" in file_contents:
-            result["language"] = "python"
-            result["framework"] = "python"
-            result["runtime"] = "PYTHON_3"
-        
-        # Java 감지
-        elif "pom.xml" in file_contents:
-            result["language"] = "java"
-            result["framework"] = "java"
-            result["runtime"] = "JAVA_17"
-        
-        elif "build.gradle" in file_contents:
-            result["language"] = "java"
-            result["framework"] = "java"
-            result["runtime"] = "JAVA_17"
-        
-        # Go 감지
-        elif "go.mod" in file_contents:
-            result["language"] = "go"
-            result["framework"] = "go"
-            result["runtime"] = "GO_1"
-        
-        print(f"Analysis result: {result['framework']} ({result['runtime']})")
         return result
 
-
 # =============================================================================
-# Bedrock Client
+# 3. AI Agents (New & Existing)
 # =============================================================================
 
-class BedrockCostEstimator:
-    """Bedrock Claude를 사용한 비용 추정"""
-    
+class BedrockAgent:
+    """통합 Bedrock 클라이언트 (Chat, Analysis, Cost)"""
     def __init__(self):
         self.bedrock_runtime = boto3.client(
             'bedrock-runtime',
             region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
         )
         self.model_id = 'anthropic.claude-3-5-sonnet-20240620-v1:0'
-    
-    def estimate_cost(
-        self,
-        repo_analysis: Dict[str, Any],
-        cpu_constraint: str,
-        memory_constraint: str
-    ) -> Dict[str, Any]:
+
+    def _invoke_model(self, system_prompt: str, user_prompt: str) -> str:
+        """Bedrock 호출 공통 메서드"""
+        try:
+            response = self.bedrock_runtime.converse(
+                modelId=self.model_id,
+                messages=[{"role": "user", "content": [{"text": user_prompt}]}],
+                system=[{"text": system_prompt}],
+                inferenceConfig={"maxTokens": 2000, "temperature": 0.5}
+            )
+            return response['output']['message']['content'][0]['text']
+        except Exception as e:
+            print(f"Bedrock Error: {e}")
+            return "{}"
+
+    # --- 기능 0: Main LLM (기획안 검토 및 일반 질의) ---
+    def main_query(self, message: str, context: Optional[Dict] = None) -> str:
+        """
+        일반적인 LLM 기능 - 기획안 검토, 사용자 질의 등
+        
+        Args:
+            message: 사용자 질문
+            context: 추가 컨텍스트 (선택)
+        
+        Returns:
+            LLM 응답
+        """
+        system = """You are an expert technical consultant and product advisor specializing in:
+- Software architecture and system design
+- Cloud infrastructure planning (AWS, Azure, GCP)
+- Technical proposal and specification review
+- DevOps and deployment strategies
+- Cost optimization and scalability analysis
+
+Provide detailed, professional, and actionable advice. When reviewing proposals:
+1. Analyze technical feasibility
+2. Identify potential risks and challenges
+3. Suggest improvements and alternatives
+4. Consider scalability, cost, and maintainability"""
+        
+        # 컨텍스트가 있으면 질문에 추가
+        if context:
+            context_str = "\n\n**Context:**\n" + "\n".join([f"- {k}: {v}" for k, v in context.items()])
+            full_message = message + context_str
+        else:
+            full_message = message
+        
+        return self._invoke_model(system, full_message)
+
+    # --- 기능 1: 일반 대화 ---
+    def chat(self, message: str) -> str:
+        system = "You are a helpful and technical AI assistant for developers."
+        return self._invoke_model(system, message)
+
+    # --- 기능 2: 배포 유형 판단 (Static vs Dynamic) ---
+    def analyze_deployment_type(self, repo_analysis: Dict, file_list: Dict) -> Dict:
+        system = """You are a DevOps expert. Analyze the project structure to determine the deployment type.
+        
+        **Rules:**
+        1. STATIC: Pure HTML/CSS, or SPA (React, Vue) without backend logic (SSR).
+        2. DYNAMIC: Python, Java, Go, Node.js (Express, NestJS), or Docker based apps.
+        
+        **Response Format (JSON Only):**
+        {
+            "deployment_type": "STATIC" | "DYNAMIC",
+            "reason": "Explain why...",
+            "recommended_service": "S3+CloudFront" | "App Runner" | "EC2"
+        }
+        """
+        user = f"""Project Info:
+        - Framework: {repo_analysis.get('framework')}
+        - Language: {repo_analysis.get('language')}
+        - Files present: {list(file_list.keys())}
+        
+        Determine the deployment type."""
+        
+        response_text = self._invoke_model(system, user)
+        return self._parse_json(response_text)
+
+    # --- 기능 3: 비용 추정 (상세 로직) ---
+    def estimate_cost(self, repo_analysis: Dict, cpu: str, memory: str) -> Dict:
         """
         Bedrock Claude를 호출하여 비용 추정
         
         Args:
             repo_analysis: Repository 분석 결과
-            cpu_constraint: 허용된 CPU (예: "1 vCPU")
-            memory_constraint: 허용된 Memory (예: "2 GB")
+            cpu: 허용된 CPU (예: "1 vCPU")
+            memory: 허용된 Memory (예: "2 GB")
         
         Returns:
             비용 추정 결과
         """
-        system_prompt = self._build_system_prompt(cpu_constraint, memory_constraint)
-        user_prompt = self._build_user_prompt(repo_analysis)
+        system_prompt = self._build_cost_system_prompt(cpu, memory)
+        user_prompt = self._build_cost_user_prompt(repo_analysis)
         
         try:
-            # Bedrock Converse API 호출
-            response = self.bedrock_runtime.converse(
-                modelId=self.model_id,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [{"text": user_prompt}]
-                    }
-                ],
-                system=[{"text": system_prompt}],
-                inferenceConfig={
-                    "maxTokens": 2000,
-                    "temperature": 0.3,
-                    "topP": 0.9
-                }
-            )
-            
-            # 응답 파싱
-            output_text = response['output']['message']['content'][0]['text']
+            response_text = self._invoke_model(system_prompt, user_prompt)
             
             # JSON 추출
-            result = self._parse_json_response(output_text)
+            result = self._parse_cost_json_response(response_text)
             
             # 스펙 강제 적용
-            result = self._enforce_spec_constraints(result, cpu_constraint, memory_constraint)
+            result = self._enforce_spec_constraints(result, cpu, memory)
             
             return result
         
         except Exception as e:
-            print(f"Bedrock API error: {e}")
+            print(f"Cost estimation error: {e}")
             return {
                 "error": str(e),
                 "fallback": True,
                 "estimated_monthly_cost_usd": 50.0,
-                "cpu": cpu_constraint,
-                "memory": memory_constraint
+                "cpu": cpu,
+                "memory": memory
             }
     
-    def _build_system_prompt(self, cpu: str, memory: str) -> str:
-        """시스템 프롬프트 생성 (스펙 제약 포함)"""
+    def _build_cost_system_prompt(self, cpu: str, memory: str) -> str:
+        """비용 추정용 시스템 프롬프트 생성 (스펙 제약 포함)"""
         return f"""You are an AWS App Runner cost estimation specialist.
 
 **STRICT CONSTRAINTS - YOU MUST FOLLOW:**
@@ -311,8 +281,8 @@ class BedrockCostEstimator:
 
 YOU MUST use EXACTLY {cpu} and {memory}. DO NOT suggest alternatives."""
     
-    def _build_user_prompt(self, repo_analysis: Dict[str, Any]) -> str:
-        """사용자 프롬프트 생성"""
+    def _build_cost_user_prompt(self, repo_analysis: Dict[str, Any]) -> str:
+        """비용 추정용 사용자 프롬프트 생성"""
         return f"""## Repository Analysis:
 - Framework: {repo_analysis['framework']}
 - Language: {repo_analysis['language']}
@@ -324,8 +294,8 @@ Estimate the monthly AWS App Runner cost for this application.
 Use the EXACT CPU and Memory specified in the system prompt.
 Provide realistic estimates based on typical production usage."""
     
-    def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        """LLM 응답에서 JSON 추출"""
+    def _parse_cost_json_response(self, response: str) -> Dict[str, Any]:
+        """비용 추정 LLM 응답에서 JSON 추출"""
         try:
             # JSON 코드 블록 추출
             if "```json" in response:
@@ -369,148 +339,215 @@ Provide realistic estimates based on typical production usage."""
         
         return result
 
+    def _parse_json(self, text: str) -> Dict:
+        """일반 JSON 파싱 (chat, deployment_check용)"""
+        try:
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            return json.loads(text[start:end])
+        except:
+            return {"error": "JSON parsing failed", "raw": text}
 
 # =============================================================================
-# Lambda Handler
+# 4. Action Handlers (기능별 처리 함수)
+# =============================================================================
+
+def handle_main(event: Dict) -> Dict:
+    """기능 0: Main LLM 핸들러 (기획안 검토 및 일반 질의)"""
+    message = event.get('message')
+    if not message:
+        return {'statusCode': 400, 'body': json.dumps({'error': 'message is required'})}
+    
+    # 선택적 컨텍스트 정보
+    context = event.get('context')
+    
+    agent = BedrockAgent()
+    reply = agent.main_query(message, context)
+    
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'reply': reply})
+    }
+
+def handle_chat(event: Dict) -> Dict:
+    """기능 1: 일반 챗봇 핸들러"""
+    message = event.get('message')
+    if not message:
+        return {'statusCode': 400, 'body': json.dumps({'error': 'message is required'})}
+    
+    agent = BedrockAgent()
+    reply = agent.chat(message)
+    
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'reply': reply})
+    }
+
+def handle_deployment_check(event: Dict) -> Dict:
+    """기능 2: 정적/동적 배포 판단 핸들러"""
+    s3_snapshot = event.get('s3_snapshot')
+    if not s3_snapshot:
+        return {'statusCode': 400, 'body': json.dumps({'error': 's3_snapshot required'})}
+
+    # 1. 파일 로드
+    loader = S3SnapshotLoader()
+    files = loader.load_snapshot(s3_snapshot['bucket'], s3_snapshot['s3_prefix'])
+    
+    if not files:
+        return {'statusCode': 404, 'body': json.dumps({'error': 'No files found'})}
+
+    # 2. 기본 분석
+    analyzer = RepositoryAnalyzer()
+    analysis_result = analyzer.analyze(files)
+
+    # 3. AI 심층 분석 (Static vs Dynamic)
+    agent = BedrockAgent()
+    deployment_info = agent.analyze_deployment_type(analysis_result, files)
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'basic_analysis': analysis_result,
+            'deployment_recommendation': deployment_info
+        })
+    }
+
+def handle_cost_estimation(event: Dict) -> Dict:
+    """기능 3: 비용 견적 핸들러 (기존 로직)"""
+    s3_snapshot = event.get('s3_snapshot')
+    if not s3_snapshot:
+        return {'statusCode': 400, 'body': json.dumps({'error': 's3_snapshot required'})}
+
+    cpu = event.get('cpu', '1 vCPU')
+    memory = event.get('memory', '2 GB')
+
+    # 1. 파일 로드
+    loader = S3SnapshotLoader()
+    files = loader.load_snapshot(s3_snapshot['bucket'], s3_snapshot['s3_prefix'])
+    
+    # 2. 분석
+    analyzer = RepositoryAnalyzer()
+    analysis_result = analyzer.analyze(files)
+
+    # 3. 비용 견적
+    agent = BedrockAgent()
+    cost_info = agent.estimate_cost(analysis_result, cpu, memory)
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'repository_analysis': analysis_result,
+            'cost_estimation': cost_info
+        })
+    }
+
+# =============================================================================
+# 5. Main Dispatcher (메인 라우터)
 # =============================================================================
 
 def handler(event, context):
     """
-    Agent Lambda Handler (이중 구조)
+    Lambda Handler - API Gateway와 직접 Invoke 모두 지원
     
-    Step 1: S3에서 Repository 정보 로드 및 분석
-    Step 2: Bedrock으로 비용 추정 (service.py 스펙 강제)
-    
-    Event 구조:
+    API Gateway 요청 시 event 구조:
     {
-        "s3_snapshot": {
-            "bucket": "haifu-dev-source-bucket",
-            "s3_prefix": "user/123/proj/svc/20251122-sourcefile"
-        },
-        "cpu": "1 vCPU",  # Optional (기본값: 1 vCPU)
-        "memory": "2 GB"   # Optional (기본값: 2 GB)
+        "body": "{\"action\": \"main\", \"message\": \"...\"}",
+        "headers": {...},
+        "requestContext": {...}
     }
     
-    Returns:
+    직접 Invoke 시 event 구조:
     {
-        "statusCode": 200,
-        "body": {
-            "repository_analysis": {...},
-            "cost_estimation": {...}
-        }
+        "action": "main",
+        "message": "..."
     }
     """
-    print(f"Event: {json.dumps(event)}")
+    print(f"Received Event: {json.dumps(event)}")
     
     try:
-        # 입력 검증
-        s3_snapshot = event.get('s3_snapshot')
-        if not s3_snapshot or not s3_snapshot.get('bucket') or not s3_snapshot.get('s3_prefix'):
-            return {
+        # API Gateway 요청 vs 직접 Lambda Invoke 구분
+        if 'body' in event and 'requestContext' in event:
+            # API Gateway를 통한 요청
+            print("Processing API Gateway request")
+            body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
+            is_api_gateway = True
+            
+            # API Gateway 경로에서 action 추출 (우선순위)
+            raw_path = event.get('rawPath', event.get('requestContext', {}).get('http', {}).get('path', ''))
+            print(f"Request path: {raw_path}")
+            
+            # 경로에서 action 추출 (/main -> main, /chat -> chat)
+            if raw_path and raw_path != '/':
+                path_action = raw_path.strip('/').split('/')[0]  # /main, /api/main 등 처리
+                # 유효한 액션인지 확인
+                if path_action in ['main', 'chat', 'deployment', 'cost']:
+                    action = path_action
+                    print(f"Action from path: {action}")
+                else:
+                    # body에서 action 가져오기
+                    action = body.get('action', 'cost')
+            else:
+                # body에서 action 가져오기
+                action = body.get('action', 'cost')
+        else:
+            # 직접 Lambda invoke
+            print("Processing direct Lambda invoke")
+            body = event
+            is_api_gateway = False
+            action = body.get('action', 'cost')
+        
+        # 액션별 핸들러 호출
+        if action == 'main': # 메인 화면 상 기획안 검토 및 일반 질의용 핸들러
+            result = handle_main(body)
+        
+        elif action == 'chat': # 일반 챗봇 핸들러
+            result = handle_chat(body)
+        
+        elif action == 'deployment_check': # 정적/동적 배포 판단 핸들러
+            result = handle_deployment_check(body)
+        
+        elif action == 'cost': # 비용 견적 핸들러
+            result = handle_cost_estimation(body)
+            
+        else:
+            result = {
                 'statusCode': 400,
-                'body': json.dumps({
-                    'error': 's3_snapshot is required with bucket and s3_prefix'
-                })
+                'body': json.dumps({'error': f"Unknown action: {action}. Use 'main', 'chat', 'deployment_check', or 'cost'"})
             }
         
-        # CPU/Memory 제약 (기본값 또는 요청값)
-        cpu = event.get('cpu', '1 vCPU')
-        memory = event.get('memory', '2 GB')
-        
-        # CPU/Memory 검증
-        if cpu not in CPU_OPTIONS:
+        # API Gateway 형식으로 응답 변환
+        if is_api_gateway:
             return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'error': f'Invalid CPU. Must be one of: {CPU_OPTIONS}'
-                })
+                'statusCode': result['statusCode'],
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',  # CORS
+                    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+                },
+                'body': result['body']
             }
-        
-        if memory not in MEMORY_OPTIONS:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'error': f'Invalid memory. Must be one of: {MEMORY_OPTIONS}'
-                })
-            }
-        
-        # CPU-Memory 조합 검증
-        allowed_memory = CPU_MEMORY_COMBINATIONS.get(cpu, [])
-        if memory not in allowed_memory:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'error': f'Invalid CPU-Memory combination. {cpu} supports: {allowed_memory}'
-                })
-            }
-        
-        # ===================================================================
-        # Step 1: S3에서 Repository 정보 로드 및 분석
-        # ===================================================================
-        print(f"Step 1: Loading from S3 - {s3_snapshot['s3_prefix']}")
-        
-        s3_loader = S3SnapshotLoader()
-        file_contents = s3_loader.load_snapshot(
-            bucket=s3_snapshot['bucket'],
-            s3_prefix=s3_snapshot['s3_prefix']
-        )
-        
-        if not file_contents:
-            return {
-                'statusCode': 404,
-                'body': json.dumps({
-                    'error': 'No files found in S3 snapshot'
-                })
-            }
-        
-        # Repository 분석
-        analyzer = RepositoryAnalyzer()
-        repo_analysis = analyzer.analyze(file_contents)
-        
-        print(f"Repository analysis complete: {repo_analysis['framework']}")
-        
-        # ===================================================================
-        # Step 2: Bedrock으로 비용 추정 (스펙 강제)
-        # ===================================================================
-        print(f"Step 2: Cost estimation with CPU={cpu}, Memory={memory}")
-        
-        estimator = BedrockCostEstimator()
-        cost_estimation = estimator.estimate_cost(
-            repo_analysis=repo_analysis,
-            cpu_constraint=cpu,
-            memory_constraint=memory
-        )
-        
-        print(f"Cost estimation complete: ${cost_estimation.get('estimated_monthly_cost_usd', 0)}/month")
-        
-        # ===================================================================
-        # 최종 응답
-        # ===================================================================
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'success': True,
-                'repository_analysis': repo_analysis,
-                'cost_estimation': cost_estimation,
-                'constraints': {
-                    'cpu': cpu,
-                    'memory': memory,
-                    'allowed_runtimes': RUNTIMES,
-                    'allowed_cpu_options': CPU_OPTIONS,
-                    'allowed_memory_options': MEMORY_OPTIONS
-                }
-            })
-        }
-    
+        else:
+            # 직접 invoke는 원래 형식 그대로
+            return result
+            
     except Exception as e:
-        print(f"Error: {str(e)}")
         import traceback
         traceback.print_exc()
         
-        return {
+        error_response = {
             'statusCode': 500,
             'body': json.dumps({
-                'error': 'Internal server error',
+                'error': 'Internal Server Error',
                 'message': str(e)
             })
         }
+        
+        # API Gateway 요청인 경우 헤더 추가
+        if 'body' in event and 'requestContext' in event:
+            error_response['headers'] = {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
+        
+        return error_response

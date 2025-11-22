@@ -379,6 +379,26 @@ module "websocket_api" {
   tags = local.common_tags
 }
 
+# Agent HTTP API
+module "agent_http_api" {
+  source = "./modules/api-gateway-http"
+  
+  name_prefix           = local.name_prefix
+  lambda_function_arn   = module.lambda.lambda_function_arns["agent"]
+  lambda_function_name  = module.lambda.lambda_function_names["agent"]
+  
+  routes = [
+    { route_key = "POST /main" },
+    { route_key = "POST /chat" },
+    { route_key = "POST /deployment" },
+    { route_key = "POST /cost" }
+  ]
+  
+  cors_allow_origins = ["*"]  # 프로덕션에서는 특정 도메인으로 제한
+  
+  tags = local.common_tags
+}
+
 # ECR Repository for backend
 resource "aws_ecr_repository" "backend" {
   name = "${local.name_prefix}-backend"
