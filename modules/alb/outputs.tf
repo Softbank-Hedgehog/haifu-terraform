@@ -22,3 +22,13 @@ output "backend_target_group_arn" {
   description = "Backend target group ARN"
   value       = aws_lb_target_group.backend.arn
 }
+
+output "listener_arn" {
+  description = "ALB listener ARN"
+  value       = var.certificate_arn != null ? aws_lb_listener.https[0].arn : aws_lb_listener.http.arn
+}
+
+output "security_group_id" {
+  description = "ALB security group ID"
+  value       = var.security_group_ids[0]
+}

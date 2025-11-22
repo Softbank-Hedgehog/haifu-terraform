@@ -222,7 +222,7 @@ module "user_services" {
   container_port        = 80
   cpu                   = "256"
   memory                = "512"
-  desired_count         = 1
+  desired_count         = 0  # No default service running
   
   vpc_id                = module.vpc.vpc_id
   subnet_ids            = module.vpc.private_subnets
@@ -231,13 +231,14 @@ module "user_services" {
   execution_role_arn    = module.iam.role_arns["ecs-execution-role"]
   task_role_arn         = module.iam.role_arns["ecs-task-role"]
   
-  enable_autoscaling    = true
-  min_capacity          = 1
-  max_capacity          = 3
-  cpu_target_value      = 70
+  enable_autoscaling    = false
   
   tags = local.common_tags
 }
+
+# User deployments will be created dynamically by deployment Lambda
+# Static deployments: S3 + CloudFront via CloudFormation
+# Dynamic deployments: ECS Fargate services created on-demand
 
 module "dynamodb" {
   source = "./modules/dynamodb"
@@ -253,6 +254,18 @@ module "dynamodb" {
       attributes = [
         {
           name = "deployment_id"
+          type = "S"
+        }
+      ]
+    },
+    {
+      name         = "service-registry"
+      hash_key     = "service_name"
+      range_key    = ""
+      billing_mode = "PAY_PER_REQUEST"
+      attributes = [
+        {
+          name = "service_name"
           type = "S"
         }
       ]

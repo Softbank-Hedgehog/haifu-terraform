@@ -1,0 +1,61 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=$${COMMIT_HASH:=latest}
+  build:
+    commands:
+      - echo Build started on `date`
+      %{ for cmd in install_commands ~}
+      - ${cmd}
+      %{ endfor ~}
+      %{ for cmd in build_commands ~}
+      - ${cmd}
+      %{ endfor ~}
+      - echo Building the Docker image...
+      - |
+        cat > Dockerfile << 'EOF'
+        %{ if runtime == "nodejs18" ~}
+        FROM node:18-alpine
+        WORKDIR /app
+        COPY package*.json ./
+        RUN npm ci --only=production
+        COPY . .
+        EXPOSE 80
+        CMD ["${start_command}"]
+        %{ endif ~}
+        %{ if runtime == "python3.11" ~}
+        FROM python:3.11-slim
+        WORKDIR /app
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        COPY . .
+        EXPOSE 80
+        CMD ["${start_command}"]
+        %{ endif ~}
+        %{ if runtime == "java17" ~}
+        FROM openjdk:17-jre-slim
+        WORKDIR /app
+        COPY target/*.jar app.jar
+        EXPOSE 80
+        CMD ["java", "-jar", "app.jar"]
+        %{ endif ~}
+        EOF
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker image...
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo Writing image definitions file...
+      - printf '[{"name":"%s","imageUri":"%s"}]' $IMAGE_REPO_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
