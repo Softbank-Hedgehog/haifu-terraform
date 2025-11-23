@@ -122,7 +122,10 @@ def calculate_app_runner_cost(cpu: str, memory: str, uptime_percentage: float = 
 class S3SnapshotLoader:
     """S3에서 소스 스냅샷 로드"""
     def __init__(self):
-        self.s3_client = boto3.client('s3')
+        self.s3_client = boto3.client(
+            's3',
+            region_name=os.environ.get('S3_REGION', 'ap-northeast-2')
+        )
     
     def list_files(self, bucket: str, s3_prefix: str, max_files: int = 50) -> List[str]:
         try:
@@ -269,25 +272,77 @@ Provide detailed, professional, and actionable advice. When reviewing proposals:
 
     # --- 기능 2: 배포 유형 판단 (Static vs Dynamic) ---
     def analyze_deployment_type(self, repo_analysis: Dict, file_list: Dict) -> Dict:
-        system = """You are a DevOps expert. Analyze the project structure to determine the deployment type.
+        # Runtime 매핑 (App Runner 형식)
+        runtime_map_to_apprunner = {
+            'PYTHON_3': 'python3.11',
+            'NODEJS_16': 'nodejs16',
+            'NODEJS_18': 'nodejs18',
+            'NODEJS_20': 'nodejs20',
+            'JAVA_11': 'java11',
+            'JAVA_17': 'java17',
+            'GO_1': 'go1.21',
+            'DOTNET_6': 'dotnet6',
+            'PHP_81': 'php81',
+            'RUBY_31': 'ruby31'
+        }
+        
+        system = f"""You are a DevOps expert. Analyze the project structure to determine the service type and deployment configuration.
         
         **Rules:**
-        1. STATIC: Pure HTML/CSS, or SPA (React, Vue) without backend logic (SSR).
-        2. DYNAMIC: Python, Java, Go, Node.js (Express, NestJS), or Docker based apps.
+        1. static: Pure HTML/CSS, or SPA (React, Vue) without backend logic (SSR).
+        2. dynamic: Python, Java, Go, Node.js (Express, NestJS), or Docker based apps.
+        
+        **STRICT CONSTRAINTS - YOU MUST FOLLOW:**
+        - Runtime: MUST be one of {', '.join(runtime_map_to_apprunner.values())}
+        - CPU: MUST be one of {', '.join(CPU_OPTIONS)} (for dynamic services)
+        - Memory: MUST be one of {', '.join(MEMORY_OPTIONS)} (for dynamic services)
+        - CPU-Memory combinations: {json.dumps(CPU_MEMORY_COMBINATIONS, indent=2)}
         
         **Response Format (JSON Only):**
-        {
-            "deployment_type": "STATIC" | "DYNAMIC",
-            "reason": "Explain why...",
-            "recommended_service": "S3+CloudFront" | "App Runner" | "EC2"
-        }
+        
+        For STATIC:
+        {{
+            "service_type": "static",
+            "build_commands": ["npm install", "npm run build"],
+            "build_output_dir": "dist",
+            "node_version": "16" | "18" | "20"
+        }}
+        
+        For DYNAMIC:
+        {{
+            "service_type": "dynamic",
+            "runtime": "{' | '.join(runtime_map_to_apprunner.values())}",
+            "start_command": "npm start" | "python main.py" | "java -jar app.jar" | "./app",
+            "dockerfile": "optional custom dockerfile path or null",
+            "cpu": "{' | '.join(CPU_OPTIONS)}",
+            "memory": "{' | '.join(MEMORY_OPTIONS)}",
+            "port": 80,
+            "environment_variables": {{
+                "NODE_ENV": "production",
+                "API_BASE_URL": "https://api.example.com"
+            }}
+        }}
+        
+        **Guidelines:**
+        - build_commands: Array of commands to build the project
+        - build_output_dir: Directory where build output is generated
+        - node_version: Node.js version (16, 18, 20)
+        - runtime: MUST match one of the allowed runtimes exactly
+        - start_command: Command to start the application
+        - cpu: MUST be one of {', '.join(CPU_OPTIONS)}
+        - memory: MUST be one of {', '.join(MEMORY_OPTIONS)}
+        - cpu and memory MUST be a valid combination from the allowed combinations
+        - port: Application port (default 80)
+        - environment_variables: Optional key-value pairs
         """
         user = f"""Project Info:
         - Framework: {repo_analysis.get('framework')}
         - Language: {repo_analysis.get('language')}
+        - Runtime: {repo_analysis.get('runtime')}
+        - Has Dockerfile: {repo_analysis.get('has_dockerfile', False)}
         - Files present: {list(file_list.keys())}
         
-        Determine the deployment type."""
+        Analyze and provide complete deployment configuration following the STRICT CONSTRAINTS."""
         
         response_text = self._invoke_model(system, user)
         return self._parse_json(response_text)
@@ -479,10 +534,15 @@ def handle_chat(event: Dict) -> Dict:
     }
 
 def handle_deployment_check(event: Dict) -> Dict:
-    """기능 2: 정적/동적 배포 판단 핸들러 - STATIC 또는 DYNAMIC 반환"""
+    """기능 2: 정적/동적 배포 판단 핸들러 - Static/Dynamic 각각의 형식에 맞게 반환"""
     s3_snapshot = event.get('s3_snapshot')
     if not s3_snapshot:
         return {'statusCode': 400, 'body': json.dumps({'error': 's3_snapshot required'})}
+
+    # 요청에서 사용자 정보 추출
+    user_id = event.get('user_id')
+    project_id = event.get('project_id')
+    service_id = event.get('service_id')
 
     # 1. 파일 로드
     loader = S3SnapshotLoader()
@@ -495,22 +555,138 @@ def handle_deployment_check(event: Dict) -> Dict:
     analyzer = RepositoryAnalyzer()
     analysis_result = analyzer.analyze(files)
 
-    # 3. AI 심층 분석 (Static vs Dynamic)
+    # 3. AI 심층 분석 (Static vs Dynamic + 상세 설정)
     agent = BedrockAgent()
     deployment_info = agent.analyze_deployment_type(analysis_result, files)
     
-    # 4. deployment_type 추출 (STATIC 또는 DYNAMIC)
-    deployment_type = deployment_info.get('deployment_type', 'DYNAMIC')
+    print(f"LLM Analysis Result: {json.dumps(deployment_info, indent=2)}")
     
-    # 유효성 검증
-    if deployment_type not in ['STATIC', 'DYNAMIC']:
-        deployment_type = 'DYNAMIC'  # 기본값
+    # 4. service_type 추출 및 검증
+    service_type = deployment_info.get('service_type', 'dynamic').lower()
+    
+    if service_type not in ['static', 'dynamic']:
+        print(f"Warning: Invalid service_type '{service_type}', defaulting to 'dynamic'")
+        service_type = 'dynamic'
+    
+    # 5. 응답 구성 - Static과 Dynamic 각각 다른 형식
+    response_data = {
+        'service_type': service_type
+    }
+    
+    if service_type == 'static':
+        # Static 서비스 응답 형식
+        if user_id:
+            response_data['user_id'] = user_id
+        if project_id:
+            response_data['project_id'] = project_id
+        if service_id:
+            response_data['service_id'] = service_id
+        
+        # node_version 검증 (16, 18, 20만 허용)
+        node_version = deployment_info.get('node_version')
+        allowed_node_versions = ['16', '18', '20']
+        if not node_version or str(node_version) not in allowed_node_versions:
+            node_version = '18'  # 기본값
+            print(f"Invalid node_version '{deployment_info.get('node_version')}', using default: {node_version}")
+        
+        response_data.update({
+            'build_commands': deployment_info.get('build_commands') or ['npm install', 'npm run build'],
+            'build_output_dir': deployment_info.get('build_output_dir') or 'dist',
+            'node_version': str(node_version)
+        })
+        
+        # Static도 runtime, cpu, memory, port, environment_variables 포함 가능
+        if 'runtime' in deployment_info:
+            response_data['runtime'] = deployment_info.get('runtime')
+        if 'cpu' in deployment_info:
+            response_data['cpu'] = deployment_info.get('cpu')
+        if 'memory' in deployment_info:
+            response_data['memory'] = deployment_info.get('memory')
+        if 'port' in deployment_info:
+            response_data['port'] = deployment_info.get('port')
+        if 'environment_variables' in deployment_info:
+            response_data['environment_variables'] = deployment_info.get('environment_variables', {})
+    else:
+        # Dynamic 서비스 응답 형식
+        # Runtime 변환 (PYTHON_3 -> python3.11)
+        runtime_map = {
+            'PYTHON_3': 'python3.11',
+            'NODEJS_16': 'nodejs16',
+            'NODEJS_18': 'nodejs18',
+            'NODEJS_20': 'nodejs20',
+            'JAVA_11': 'java11',
+            'JAVA_17': 'java17',
+            'GO_1': 'go1.21',
+            'DOTNET_6': 'dotnet6',
+            'PHP_81': 'php81',
+            'RUBY_31': 'ruby31'
+        }
+        
+        # 허용된 App Runner runtime 형식
+        allowed_runtimes = list(runtime_map.values())
+        
+        # 1. Runtime 검증 및 변환
+        llm_runtime = deployment_info.get('runtime')
+        if not llm_runtime or llm_runtime not in allowed_runtimes:
+            # LLM이 제공하지 않았거나 유효하지 않은 경우, 분석 결과 기반 변환
+            detected_runtime = analysis_result.get('runtime', 'PYTHON_3')
+            llm_runtime = runtime_map.get(detected_runtime, 'python3.11')
+            print(f"Using fallback runtime: {llm_runtime} (from {detected_runtime})")
+        
+        # 2. CPU 검증 및 변환
+        llm_cpu = deployment_info.get('cpu')
+        # LLM이 숫자로 반환했을 수 있으므로 변환
+        if isinstance(llm_cpu, (int, float)):
+            # millicores를 vCPU 형식으로 변환 (256 -> "1 vCPU", 512 -> "1 vCPU", 1024 -> "2 vCPU", etc.)
+            vcpu_value = int(llm_cpu / 1024) if llm_cpu >= 1024 else 1
+            llm_cpu = f"{vcpu_value} vCPU"
+        
+        if not llm_cpu or llm_cpu not in CPU_OPTIONS:
+            llm_cpu = CPU_OPTIONS[0]  # 기본값: "1 vCPU"
+            print(f"Invalid CPU '{deployment_info.get('cpu')}', using default: {llm_cpu}")
+        
+        # 3. Memory 검증 및 변환
+        llm_memory = deployment_info.get('memory')
+        # LLM이 숫자로 반환했을 수 있으므로 변환
+        if isinstance(llm_memory, (int, float)):
+            # MB를 GB 형식으로 변환 (512 -> "1 GB", 1024 -> "2 GB", etc.)
+            gb_value = int(llm_memory / 1024) if llm_memory >= 1024 else 2
+            llm_memory = f"{gb_value} GB"
+        
+        if not llm_memory or llm_memory not in MEMORY_OPTIONS:
+            llm_memory = MEMORY_OPTIONS[0]  # 기본값: "2 GB"
+            print(f"Invalid memory '{deployment_info.get('memory')}', using default: {llm_memory}")
+        
+        # 4. CPU-Memory 조합 검증
+        allowed_memory_for_cpu = CPU_MEMORY_COMBINATIONS.get(llm_cpu, [])
+        if llm_memory not in allowed_memory_for_cpu:
+            # 유효하지 않은 조합이면 CPU에 맞는 첫 번째 메모리 사용
+            llm_memory = allowed_memory_for_cpu[0] if allowed_memory_for_cpu else MEMORY_OPTIONS[0]
+            print(f"Invalid CPU-Memory combination ({llm_cpu} + {deployment_info.get('memory')}), using: {llm_cpu} + {llm_memory}")
+        
+        response_data.update({
+            'runtime': llm_runtime,
+            'start_command': deployment_info.get('start_command') or 'npm start',
+            'cpu': llm_cpu,
+            'memory': llm_memory,
+            'port': deployment_info.get('port') or 80
+        })
+        
+        # dockerfile은 LLM이 제공한 경우에만 포함 (null이면 제거)
+        dockerfile = deployment_info.get('dockerfile')
+        if dockerfile is not None:
+            response_data['dockerfile'] = dockerfile
+        
+        # environment_variables는 optional (존재하고 비어있지 않을 때만 포함)
+        env_vars = deployment_info.get('environment_variables')
+        if env_vars and isinstance(env_vars, dict) and len(env_vars) > 0:
+            response_data['environment_variables'] = env_vars
 
+    print(f"Final Response: {json.dumps(response_data, indent=2)}")
+    
     return {
         'statusCode': 200,
-        'body': json.dumps({
-            'deployment_type': deployment_type
-        })
+        'body': json.dumps(response_data)
     }
 
 def handle_cost_estimation(event: Dict) -> Dict:
@@ -546,7 +722,7 @@ def handle_cost_estimation(event: Dict) -> Dict:
 # 5. Main Dispatcher (메인 라우터)
 # =============================================================================
 
-def handler(event, context):
+def handler(event, _context):
     """
     Lambda Handler - API Gateway와 직접 Invoke 모두 지원
     
@@ -562,33 +738,56 @@ def handler(event, context):
         "action": "main",
         "message": "..."
     }
+    
+    Args:
+        event: Lambda 이벤트 데이터
+        _context: Lambda 컨텍스트 (미사용, 표준 시그니처 유지)
     """
     print(f"Received Event: {json.dumps(event)}")
     
     try:
         # API Gateway 요청 vs 직접 Lambda Invoke 구분
         if 'body' in event and 'requestContext' in event:
-            # API Gateway를 통한 요청
+            # API Gateway를 통한 요청 (REST API)
             print("Processing API Gateway request")
             body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
             is_api_gateway = True
             
-            # API Gateway 경로에서 action 추출 (우선순위)
-            raw_path = event.get('rawPath', event.get('requestContext', {}).get('http', {}).get('path', ''))
-            print(f"Request path: {raw_path}")
+            # REST API Gateway: event['path']에서 경로 추출
+            # 예: "/prod/main" -> "main", "/main" -> "main"
+            request_path = event.get('path', '/')
+            stage = event.get('requestContext', {}).get('stage', '')
+            http_method = event.get('httpMethod', 'POST')
+            
+            print(f"Request path: {request_path}, Stage: {stage}, Method: {http_method}")
+            
+            # 스테이지 제거 (경로가 /prod/main 형태인 경우)
+            if stage and request_path.startswith(f'/{stage}/'):
+                # "/prod/main" -> "/main"
+                clean_path = request_path[len(stage) + 1:]
+            else:
+                clean_path = request_path
+            
+            print(f"Clean path: {clean_path}")
             
             # 경로에서 action 추출 (/main -> main, /chat -> chat)
-            if raw_path and raw_path != '/':
-                path_action = raw_path.strip('/').split('/')[0]  # /main, /api/main 등 처리
-                # 유효한 액션인지 확인
-                if path_action in ['main', 'chat', 'deployment', 'cost']:
+            if clean_path and clean_path != '/':
+                # "/main" -> "main", "/cost" -> "cost"
+                path_parts = clean_path.strip('/').split('/')
+                path_action = path_parts[0] if path_parts else ''
+                
+                # deployment_check는 /deployment로 매핑
+                if path_action == 'deployment':
+                    action = 'deployment_check'
+                elif path_action in ['main', 'chat', 'cost']:
                     action = path_action
-                    print(f"Action from path: {action}")
                 else:
-                    # body에서 action 가져오기
+                    # 유효하지 않은 경로면 body에서 action 가져오기
                     action = body.get('action', 'cost')
+                    
+                print(f"Action from path: {action}")
             else:
-                # body에서 action 가져오기
+                # 경로가 없으면 body에서 action 가져오기
                 action = body.get('action', 'cost')
         else:
             # 직접 Lambda invoke
