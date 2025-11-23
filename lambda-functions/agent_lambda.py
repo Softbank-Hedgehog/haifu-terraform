@@ -11,7 +11,7 @@ import os
 from typing import Dict, Any, List, Optional
 
 # =============================================================================
-# AWS App Runner 스펙 상수 (기존 유지)
+# AWS App Runner 스펙 상수 및 가격 정보
 # =============================================================================
 RUNTIMES = [
     "PYTHON_3", "NODEJS_16", "NODEJS_18", "NODEJS_20",
@@ -24,6 +24,97 @@ CPU_MEMORY_COMBINATIONS = {
     "2 vCPU": ["4 GB", "6 GB", "8 GB"],
     "4 vCPU": ["8 GB", "10 GB", "12 GB"]
 }
+
+# AWS App Runner 가격 (Seoul Region, ap-northeast-2, 2024년 기준)
+PRICE_PER_VCPU_HOUR = 0.064   # USD
+PRICE_PER_GB_HOUR = 0.007     # USD
+HOURS_PER_MONTH = 730         # 월 평균 시간
+
+def get_app_runner_price_table():
+    """
+    제시된 CPU_MEMORY_COMBINATIONS에 대한 월별 예상 비용 테이블 생성
+    기준: AWS App Runner (Seoul Region, ap-northeast-2)
+    가정: 24시간/30일(730시간) 내내 활성(Active) 상태로 구동 시
+    """
+    price_table = {}
+    
+    for cpu_label, memory_list in CPU_MEMORY_COMBINATIONS.items():
+        # "1 vCPU" -> 1.0 (숫자 추출)
+        cpu_val = float(cpu_label.split()[0])
+        
+        price_table[cpu_label] = {}
+        
+        for mem_label in memory_list:
+            # "2 GB" -> 2.0 (숫자 추출)
+            mem_val = float(mem_label.split()[0])
+            
+            # 시간당 비용 계산
+            hourly_cost = (cpu_val * PRICE_PER_VCPU_HOUR) + (mem_val * PRICE_PER_GB_HOUR)
+            
+            # 월간 비용 계산 (24/7 가동 기준)
+            monthly_cost = hourly_cost * HOURS_PER_MONTH
+            
+            # 결과 저장 (소수점 둘째자리까지)
+            price_table[cpu_label][mem_label] = {
+                "hourly_usd": round(hourly_cost, 4),
+                "monthly_usd": round(monthly_cost, 2)
+            }
+            
+    return price_table
+
+def calculate_app_runner_cost(cpu: str, memory: str, uptime_percentage: float = 100.0, traffic_multiplier: float = 1.0) -> Dict[str, Any]:
+    """
+    App Runner 비용 직접 계산
+    
+    Args:
+        cpu: CPU 스펙 (예: "1 vCPU")
+        memory: Memory 스펙 (예: "2 GB")
+        uptime_percentage: 가동률 (0-100%, 기본 100%)
+        traffic_multiplier: 트래픽 배율 (기본 1.0 = medium traffic)
+    
+    Returns:
+        상세 비용 정보
+    """
+    # CPU, Memory 숫자 추출
+    cpu_val = float(cpu.split()[0])
+    mem_val = float(memory.split()[0])
+    
+    # 시간당 컴퓨트 비용
+    hourly_compute_cost = (cpu_val * PRICE_PER_VCPU_HOUR) + (mem_val * PRICE_PER_GB_HOUR)
+    
+    # 월간 컴퓨트 비용 (가동률 반영)
+    monthly_compute_cost = hourly_compute_cost * HOURS_PER_MONTH * (uptime_percentage / 100.0)
+    
+    # 데이터 전송 비용 추정 (트래픽에 따라)
+    # 가정: medium traffic = 월 100GB 아웃바운드 (첫 100GB 무료, 이후 $0.09/GB)
+    outbound_gb = 100 * traffic_multiplier
+    data_transfer_cost = max(0, (outbound_gb - 100) * 0.09)
+    
+    # 빌드 비용 (월 1-2회 배포 가정, 분당 $0.005)
+    # 평균 10분 빌드 * 2회 = 20분
+    build_cost = 20 * 0.005
+    
+    # 총 비용
+    total_monthly_cost = monthly_compute_cost + data_transfer_cost + build_cost
+    
+    return {
+        "service": "app_runner",
+        "cpu": cpu,
+        "memory": memory,
+        "estimated_monthly_cost_usd": round(total_monthly_cost, 2),
+        "breakdown": {
+            "compute": round(monthly_compute_cost, 2),
+            "data_transfer": round(data_transfer_cost, 2),
+            "build": round(build_cost, 2)
+        },
+        "pricing_details": {
+            "vcpu_price_per_hour": PRICE_PER_VCPU_HOUR,
+            "memory_price_per_gb_hour": PRICE_PER_GB_HOUR,
+            "hours_per_month": HOURS_PER_MONTH,
+            "uptime_percentage": uptime_percentage,
+            "traffic_multiplier": traffic_multiplier
+        }
+    }
 
 # =============================================================================
 # 1. S3 Service (기존 유지)
@@ -119,7 +210,7 @@ class BedrockAgent:
     def __init__(self):
         self.bedrock_runtime = boto3.client(
             'bedrock-runtime',
-            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'ap-northeast-2')
         )
         self.model_id = 'anthropic.claude-3-5-sonnet-20240620-v1:0'
 
@@ -201,10 +292,10 @@ Provide detailed, professional, and actionable advice. When reviewing proposals:
         response_text = self._invoke_model(system, user)
         return self._parse_json(response_text)
 
-    # --- 기능 3: 비용 추정 (상세 로직) ---
+    # --- 기능 3: 비용 추정 (LLM은 사용 패턴 예측, 실제 계산은 가격 테이블 사용) ---
     def estimate_cost(self, repo_analysis: Dict, cpu: str, memory: str) -> Dict:
         """
-        Bedrock Claude를 호출하여 비용 추정
+        비용 추정: LLM이 사용 패턴을 예측하고, 정확한 가격 테이블로 계산
         
         Args:
             repo_analysis: Repository 분석 결과
@@ -214,85 +305,89 @@ Provide detailed, professional, and actionable advice. When reviewing proposals:
         Returns:
             비용 추정 결과
         """
-        system_prompt = self._build_cost_system_prompt(cpu, memory)
-        user_prompt = self._build_cost_user_prompt(repo_analysis)
+        system_prompt = self._build_usage_estimation_prompt()
+        user_prompt = self._build_usage_user_prompt(repo_analysis, cpu, memory)
         
         try:
+            # 1. LLM에게 사용 패턴만 예측 요청
             response_text = self._invoke_model(system_prompt, user_prompt)
+            usage_prediction = self._parse_cost_json_response(response_text)
             
-            # JSON 추출
-            result = self._parse_cost_json_response(response_text)
+            # 2. 예측된 사용 패턴 추출 (기본값 설정)
+            uptime_percentage = usage_prediction.get('uptime_percentage', 100.0)
+            traffic_multiplier = usage_prediction.get('traffic_multiplier', 1.0)
             
-            # 스펙 강제 적용
-            result = self._enforce_spec_constraints(result, cpu, memory)
+            # 3. 정확한 가격 테이블로 비용 직접 계산
+            cost_result = calculate_app_runner_cost(cpu, memory, uptime_percentage, traffic_multiplier)
             
-            return result
+            # 4. LLM의 추가 정보 병합
+            cost_result['runtime'] = repo_analysis.get('runtime', 'PYTHON_3')
+            cost_result['framework'] = repo_analysis.get('framework', 'unknown')
+            cost_result['usage_assumptions'] = {
+                'uptime_percentage': uptime_percentage,
+                'traffic_level': usage_prediction.get('traffic_level', 'medium'),
+                'requests_per_month': usage_prediction.get('requests_per_month', 1000000)
+            }
+            cost_result['cost_optimization_tips'] = usage_prediction.get('cost_optimization_tips', [
+                "Enable auto-scaling to reduce idle costs",
+                "Use CloudFront CDN to reduce data transfer costs"
+            ])
+            cost_result['reasoning'] = usage_prediction.get('reasoning', 'Standard production workload estimation')
+            
+            return cost_result
         
         except Exception as e:
             print(f"Cost estimation error: {e}")
-            return {
-                "error": str(e),
-                "fallback": True,
-                "estimated_monthly_cost_usd": 50.0,
-                "cpu": cpu,
-                "memory": memory
-            }
+            # Fallback: 기본값으로 계산
+            fallback_cost = calculate_app_runner_cost(cpu, memory, 100.0, 1.0)
+            fallback_cost['error'] = str(e)
+            fallback_cost['fallback'] = True
+            return fallback_cost
     
-    def _build_cost_system_prompt(self, cpu: str, memory: str) -> str:
-        """비용 추정용 시스템 프롬프트 생성 (스펙 제약 포함)"""
-        return f"""You are an AWS App Runner cost estimation specialist.
+    def _build_usage_estimation_prompt(self) -> str:
+        """사용 패턴 예측용 시스템 프롬프트"""
+        return """You are an AWS workload analysis expert. Your task is to predict application usage patterns, NOT to calculate costs.
 
-**STRICT CONSTRAINTS - YOU MUST FOLLOW:**
-- CPU: {cpu} (ONLY this value is allowed)
-- Memory: {memory} (ONLY this value is allowed)
-- Runtime: Must be one of {', '.join(RUNTIMES)}
-
-**AWS App Runner Pricing (2024):**
-- vCPU: $0.064 per vCPU per hour
-- Memory: $0.007 per GB per hour
-- Build: Included in pricing
-- Data Transfer: $0.09/GB out (after 100GB free)
+**Your Job:**
+Analyze the application characteristics and predict:
+1. Expected uptime percentage (0-100%)
+2. Traffic level and multiplier
+3. Request volume
+4. Cost optimization recommendations
 
 **Response Format (JSON ONLY):**
 ```json
-{{
-  "service": "app_runner",
-  "runtime": "PYTHON_3 | NODEJS_18 | etc.",
-  "cpu": "{cpu}",
-  "memory": "{memory}",
-  "estimated_monthly_cost_usd": 45.0,
-  "breakdown": {{
-    "compute": 30.0,
-    "data_transfer": 5.0,
-    "other": 10.0
-  }},
-  "cost_assumptions": {{
-    "uptime": "24/7",
-    "traffic": "medium",
-    "requests_per_month": 1000000
-  }},
+{
+  "uptime_percentage": 100.0,
+  "traffic_level": "low" | "medium" | "high",
+  "traffic_multiplier": 1.0,
+  "requests_per_month": 1000000,
   "cost_optimization_tips": [
-    "Enable auto-scaling to reduce idle costs",
-    "Use CloudFront CDN"
+    "Specific tip 1",
+    "Specific tip 2"
   ],
-  "reasoning": "Explanation"
-}}
+  "reasoning": "Brief explanation of your predictions"
+}
 ```
 
-YOU MUST use EXACTLY {cpu} and {memory}. DO NOT suggest alternatives."""
+**Guidelines:**
+- uptime_percentage: 100 = 24/7, 50 = 12 hours/day, etc.
+- traffic_multiplier: 0.5 = low, 1.0 = medium, 2.0 = high
+- Be realistic based on the framework and use case"""
     
-    def _build_cost_user_prompt(self, repo_analysis: Dict[str, Any]) -> str:
-        """비용 추정용 사용자 프롬프트 생성"""
-        return f"""## Repository Analysis:
+    def _build_usage_user_prompt(self, repo_analysis: Dict[str, Any], cpu: str, memory: str) -> str:
+        """사용 패턴 예측용 사용자 프롬프트"""
+        return f"""## Application Info:
 - Framework: {repo_analysis['framework']}
 - Language: {repo_analysis['language']}
 - Runtime: {repo_analysis['runtime']}
 - Has Dockerfile: {repo_analysis['has_dockerfile']}
+- CPU: {cpu}
+- Memory: {memory}
 
 ## Task:
-Estimate the monthly AWS App Runner cost for this application.
-Use the EXACT CPU and Memory specified in the system prompt.
-Provide realistic estimates based on typical production usage."""
+Predict the typical usage pattern for this application in production.
+Consider the framework type and typical deployment scenarios."""
     
     def _parse_cost_json_response(self, response: str) -> Dict[str, Any]:
         """비용 추정 LLM 응답에서 JSON 추출"""
@@ -384,7 +479,7 @@ def handle_chat(event: Dict) -> Dict:
     }
 
 def handle_deployment_check(event: Dict) -> Dict:
-    """기능 2: 정적/동적 배포 판단 핸들러"""
+    """기능 2: 정적/동적 배포 판단 핸들러 - STATIC 또는 DYNAMIC 반환"""
     s3_snapshot = event.get('s3_snapshot')
     if not s3_snapshot:
         return {'statusCode': 400, 'body': json.dumps({'error': 's3_snapshot required'})}
@@ -403,12 +498,18 @@ def handle_deployment_check(event: Dict) -> Dict:
     # 3. AI 심층 분석 (Static vs Dynamic)
     agent = BedrockAgent()
     deployment_info = agent.analyze_deployment_type(analysis_result, files)
+    
+    # 4. deployment_type 추출 (STATIC 또는 DYNAMIC)
+    deployment_type = deployment_info.get('deployment_type', 'DYNAMIC')
+    
+    # 유효성 검증
+    if deployment_type not in ['STATIC', 'DYNAMIC']:
+        deployment_type = 'DYNAMIC'  # 기본값
 
     return {
         'statusCode': 200,
         'body': json.dumps({
-            'basic_analysis': analysis_result,
-            'deployment_recommendation': deployment_info
+            'deployment_type': deployment_type
         })
     }
 
