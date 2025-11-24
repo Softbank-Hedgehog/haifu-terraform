@@ -438,153 +438,29 @@ module "websocket_api" {
   tags = local.common_tags
 }
 
-# API Gateway for Agent Lambda
-resource "aws_api_gateway_rest_api" "agent_api" {
-  name = "${local.name_prefix}-agent-api"
+# Agent HTTP API
+module "agent_http_api" {
+  source = "./modules/api-gateway-http"
+  
+  name_prefix           = local.name_prefix
+  lambda_function_arn   = module.lambda.lambda_function_arns["agent"]
+  lambda_function_name  = module.lambda.lambda_function_names["agent"]
+  
+  routes = [
+    { route_key = "POST /main" },
+    { route_key = "POST /chat" },
+    { route_key = "POST /deployment" },
+    { route_key = "POST /cost" }
+  ]
+  
+  cors_allow_origins = ["*"]
   
   tags = local.common_tags
 }
-
-resource "aws_api_gateway_resource" "agent_proxy" {
-  rest_api_id = aws_api_gateway_rest_api.agent_api.id
-  parent_id   = aws_api_gateway_rest_api.agent_api.root_resource_id
-  path_part   = "{proxy+}"
-}
-
-resource "aws_api_gateway_method" "agent_proxy" {
-  rest_api_id   = aws_api_gateway_rest_api.agent_api.id
-  resource_id   = aws_api_gateway_resource.agent_proxy.id
-  http_method   = "ANY"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "agent_lambda" {
-  rest_api_id = aws_api_gateway_rest_api.agent_api.id
-  resource_id = aws_api_gateway_method.agent_proxy.resource_id
-  http_method = aws_api_gateway_method.agent_proxy.http_method
-
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${module.lambda.lambda_function_arns["agent"]}/invocations"
-}
-
-resource "aws_api_gateway_deployment" "agent_api" {
-  depends_on = [
-    aws_api_gateway_method.agent_proxy,
-    aws_api_gateway_integration.agent_lambda,
-  ]
-
-  rest_api_id = aws_api_gateway_rest_api.agent_api.id
-  stage_name  = "prod"
-}
-
-resource "aws_lambda_permission" "agent_api_gateway" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = module.lambda.lambda_function_names["agent"]
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.agent_api.execution_arn}/*/*"
-}
-
-# REST API Gateway for WebSocket Lambda
-resource "aws_api_gateway_rest_api" "websocket_rest_api" {
-  name = "${local.name_prefix}-websocket-rest-api"
-  
-  tags = local.common_tags
-}
-
-resource "aws_api_gateway_resource" "websocket_proxy" {
-  rest_api_id = aws_api_gateway_rest_api.websocket_rest_api.id
-  parent_id   = aws_api_gateway_rest_api.websocket_rest_api.root_resource_id
-  path_part   = "{proxy+}"
-}
-
-resource "aws_api_gateway_method" "websocket_proxy" {
-  rest_api_id   = aws_api_gateway_rest_api.websocket_rest_api.id
-  resource_id   = aws_api_gateway_resource.websocket_proxy.id
-  http_method   = "ANY"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "websocket_lambda" {
-  rest_api_id = aws_api_gateway_rest_api.websocket_rest_api.id
-  resource_id = aws_api_gateway_method.websocket_proxy.resource_id
-  http_method = aws_api_gateway_method.websocket_proxy.http_method
-
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${module.lambda.lambda_function_arns["websocket"]}/invocations"
-}
-
-resource "aws_api_gateway_deployment" "websocket_rest_api" {
-  depends_on = [
-    aws_api_gateway_method.websocket_proxy,
-    aws_api_gateway_integration.websocket_lambda,
-  ]
-
-  rest_api_id = aws_api_gateway_rest_api.websocket_rest_api.id
-  stage_name  = "prod"
-}
-
-resource "aws_lambda_permission" "websocket_rest_api_gateway" {
-  statement_id  = "AllowExecutionFromRestAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = module.lambda.lambda_function_names["websocket"]
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.websocket_rest_api.execution_arn}/*/*"
-}
-
-# REST API Gateway for Deployment Lambda
-resource "aws_api_gateway_rest_api" "deployment_api" {
-  name = "${local.name_prefix}-deployment-api"
-  
-  tags = local.common_tags
-}
-
-resource "aws_api_gateway_resource" "deployment_proxy" {
-  rest_api_id = aws_api_gateway_rest_api.deployment_api.id
-  parent_id   = aws_api_gateway_rest_api.deployment_api.root_resource_id
-  path_part   = "{proxy+}"
-}
-
-resource "aws_api_gateway_method" "deployment_proxy" {
-  rest_api_id   = aws_api_gateway_rest_api.deployment_api.id
-  resource_id   = aws_api_gateway_resource.deployment_proxy.id
-  http_method   = "ANY"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "deployment_lambda" {
-  rest_api_id = aws_api_gateway_rest_api.deployment_api.id
-  resource_id = aws_api_gateway_method.deployment_proxy.resource_id
-  http_method = aws_api_gateway_method.deployment_proxy.http_method
-
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${module.lambda.lambda_function_arns["deployment"]}/invocations"
-}
-
-resource "aws_api_gateway_deployment" "deployment_api" {
-  depends_on = [
-    aws_api_gateway_method.deployment_proxy,
-    aws_api_gateway_integration.deployment_lambda,
-  ]
-
-  rest_api_id = aws_api_gateway_rest_api.deployment_api.id
-  stage_name  = "prod"
-}
-
-resource "aws_lambda_permission" "deployment_api_gateway" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = module.lambda.lambda_function_names["deployment"]
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.deployment_api.execution_arn}/*/*"
-}
-
 # ECR Repository for backend
 resource "aws_ecr_repository" "backend" {
   name = "${local.name_prefix}-backend"
+  force_delete = true
   
   image_scanning_configuration {
     scan_on_push = true

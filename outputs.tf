@@ -65,6 +65,21 @@ output "websocket_api_endpoint" {
   value       = module.websocket_api.websocket_stage_url
 }
 
+output "agent_http_api_endpoint" {
+  description = "Agent HTTP API endpoint"
+  value       = module.agent_http_api.invoke_url
+}
+
+output "agent_api_routes" {
+  description = "Agent API available routes"
+  value = {
+    main       = "${module.agent_http_api.invoke_url}/main"
+    chat       = "${module.agent_http_api.invoke_url}/chat"
+    deployment = "${module.agent_http_api.invoke_url}/deployment"
+    cost       = "${module.agent_http_api.invoke_url}/cost"
+  }
+}
+
 output "lambda_function_names" {
   description = "Lambda function names"
   value       = module.lambda.lambda_function_names

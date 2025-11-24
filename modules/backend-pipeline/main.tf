@@ -4,6 +4,7 @@ data "aws_caller_identity" "current" {}
 # S3 bucket for CodePipeline artifacts
 resource "aws_s3_bucket" "artifacts" {
   bucket = "${var.name_prefix}-pipeline-artifacts"
+  force_destroy = true
   
   tags = var.tags
 }

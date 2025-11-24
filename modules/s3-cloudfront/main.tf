@@ -1,6 +1,7 @@
 # S3 Bucket for static website
 resource "aws_s3_bucket" "main" {
   bucket = "${var.name_prefix}-${var.bucket_suffix}"
+  force_destroy = true
 
   tags = var.tags
 }
