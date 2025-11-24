@@ -4,19 +4,24 @@ resource "aws_lb_listener" "http" {
   port              = "80"
   protocol          = "HTTP"
 
-  default_action {
-    type = var.certificate_arn != null ? "redirect" : "forward"
-    
-    dynamic "redirect" {
-      for_each = var.certificate_arn != null ? [1] : []
-      content {
+  dynamic "default_action" {
+    for_each = var.certificate_arn != null ? [1] : []
+    content {
+      type = "redirect"
+      redirect {
         port        = "443"
         protocol    = "HTTPS"
         status_code = "HTTP_301"
       }
     }
-    
-    target_group_arn = var.certificate_arn == null ? aws_lb_target_group.main.arn : null
+  }
+  
+  dynamic "default_action" {
+    for_each = var.certificate_arn == null ? [1] : []
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.main.arn
+    }
   }
 }
 

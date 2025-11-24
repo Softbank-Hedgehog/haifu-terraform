@@ -22,3 +22,8 @@ output "sqs_dlq_url" {
   description = "SQS DLQ URL"
   value       = var.enable_sqs ? aws_sqs_queue.dlq[0].url : null
 }
+
+output "lambda_function_urls" {
+  description = "Lambda Function URLs for HTTP access"
+  value       = { for i, lambda in var.lambdas : lambda.name => aws_lambda_function_url.function_urls[i].function_url }
+}

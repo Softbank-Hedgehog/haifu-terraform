@@ -55,17 +55,51 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
 }
 
+# ECS and ECR access for deployment lambda
+resource "aws_iam_role_policy" "lambda_deployment_policy" {
+  name = "${var.name_prefix}-lambda-deployment-policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:*",
+          "ecr:*",
+          "codebuild:*",
+          "logs:*",
+          "application-autoscaling:*",
+          "sts:GetCallerIdentity",
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "iam:PassRole",
+          "cloudfront:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # API Gateway access policy
 resource "aws_iam_role_policy_attachment" "lambda_apigw" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
 }
 
-# Bedrock access policy (for Agent Lambda)
-resource "aws_iam_policy" "lambda_bedrock" {
-  name        = "${var.name_prefix}-lambda-bedrock-policy"
-  description = "Allow Lambda to invoke Bedrock models"
-  
+# Bedrock access policy
+resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
+}
+
+# Additional Bedrock permissions
+resource "aws_iam_role_policy" "lambda_bedrock_custom" {
+  name = "${var.name_prefix}-lambda-bedrock-policy"
+  role = aws_iam_role.lambda_role.id
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -73,21 +107,16 @@ resource "aws_iam_policy" "lambda_bedrock" {
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListFoundationModels",
+          "bedrock:GetFoundationModel",
+          "bedrock:ListModelCustomizationJobs",
+          "bedrock:GetModelCustomizationJob"
         ]
-        Resource = [
-          "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
-        ]
+        Resource = "*"
       }
     ]
   })
-  
-  tags = var.tags
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = aws_iam_policy.lambda_bedrock.arn
 }
 
 # Lambda functions
@@ -112,6 +141,23 @@ resource "aws_lambda_function" "functions" {
   }
   
   tags = var.tags
+}
+
+# Lambda Function URLs for HTTP access
+resource "aws_lambda_function_url" "function_urls" {
+  count = length(var.lambdas)
+  
+  function_name      = aws_lambda_function.functions[count.index].function_name
+  authorization_type = "NONE"  # Public access - change to "AWS_IAM" for secured access
+  
+  cors {
+    allow_credentials = false
+    allow_origins     = ["*"]
+    allow_methods     = ["*"]
+    allow_headers     = ["date", "keep-alive", "content-type", "authorization"]
+    expose_headers    = ["date", "keep-alive"]
+    max_age          = 86400
+  }
 }
 
 # SQS Queue (if enabled)

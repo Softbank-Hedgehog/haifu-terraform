@@ -125,6 +125,16 @@ resource "aws_iam_role_policy" "codebuild" {
       {
         Effect = "Allow"
         Action = [
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.artifacts.arn,
+          "arn:aws:s3:::${var.s3_bucket_name}"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "cloudfront:CreateInvalidation"
         ]
         Resource = "*"
@@ -156,12 +166,14 @@ resource "aws_codebuild_project" "frontend" {
 
     environment_variable {
       name  = "VITE_API_BASE_URL"
-      value = "{{resolve:secretsmanager:haifu-client-main:SecretString:VITE_API_BASE_URL}}"
+      type  = "SECRETS_MANAGER"
+      value = "haifu-client-main:VITE_API_BASE_URL"
     }
 
     environment_variable {
       name  = "VITE_USE_MOCK_DATA"
-      value = "{{resolve:secretsmanager:haifu-client-main:SecretString:VITE_USE_MOCK_DATA}}"
+      type  = "SECRETS_MANAGER"
+      value = "haifu-client-main:VITE_USE_MOCK_DATA"
     }
 
     environment_variable {
@@ -182,7 +194,7 @@ resource "aws_codebuild_project" "frontend" {
 
   source {
     type = "CODEPIPELINE"
-    buildspec = "version: 0.2\nphases:\n  install:\n    runtime-versions:\n      nodejs: 20\n    commands:\n      - echo Installing dependencies...\n      - npm install\n  build:\n    commands:\n      - echo Building React app...\n      - npm run build\n  post_build:\n    commands:\n      - echo Deploying to S3...\n      - aws s3 sync dist/ s3://$$S3_BUCKET --delete\n      - echo Creating CloudFront invalidation...\n      - aws cloudfront create-invalidation --distribution-id $$CLOUDFRONT_DISTRIBUTION_ID --paths \"/*\"\nartifacts:\n  files:\n    - '**/*'\n  base-directory: dist"
+    buildspec = "version: 0.2\n\nphases:\n  install:\n    runtime-versions:\n      nodejs: 22\n    commands:\n      - echo Installing dependencies...\n      - echo \"VITE_API_BASE_URL=$VITE_API_BASE_URL\" > .env.production\n      - echo \"VITE_USE_MOCK_DATA=$VITE_USE_MOCK_DATA\" >> .env.production\n      - npm ci\n\n  build:\n    commands:\n      - echo Building React app...\n      - npm run build\n\n  post_build:\n    commands:\n      - echo Deploying to S3...\n      - aws s3 sync dist/ s3://$S3_BUCKET --delete\n      - echo Creating CloudFront invalidation...\n      - aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths \"/*\"\n\nartifacts:\n  files:\n    - '**/*'\n  base-directory: dist"
   }
   
   tags = var.tags

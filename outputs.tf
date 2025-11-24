@@ -53,6 +53,13 @@ output "dynamodb_table_names" {
   value       = module.dynamodb.table_names
 }
 
+output "lambda_function_urls" {
+  description = "Lambda Function URLs for HTTP access"
+  value       = module.lambda.lambda_function_urls
+}
+
+
+
 output "websocket_api_endpoint" {
   description = "WebSocket API endpoint"
   value       = module.websocket_api.websocket_stage_url

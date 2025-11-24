@@ -5,12 +5,15 @@ module "vpc" {
   source = "./modules/vpc"
 }
 
-# CloudFront용 ACM 인증서 (us-east-1)
-data "aws_acm_certificate" "cloudfront" {
-  provider = aws.us-east-1
-  domain   = "haifu.cloud"
-  statuses = ["ISSUED"]
-}
+# ACM Certificate (using existing certificate)
+# module "acm" {
+#   source = "./modules/acm"
+#   
+#   domain_name = "haifu.cloud"
+#   subject_alternative_names = ["*.haifu.cloud"]
+#   
+#   tags = local.common_tags
+# }
 
 module "alb" {
   source = "./modules/alb"
@@ -19,7 +22,7 @@ module "alb" {
   vpc_id            = module.vpc.vpc_id
   subnet_ids        = module.vpc.public_subnets
   security_group_ids = [module.vpc.default_security_group_id]
-  # certificate_arn   = module.acm.certificate_arn  # Uncomment when using ACM
+  # certificate_arn   = "arn:aws:acm:us-east-1:895169747692:certificate/30cc6903-fe92-43a0-97af-8db8d6ded87b"
   
   tags = local.common_tags
 }
@@ -62,7 +65,24 @@ module "iam" {
         ]
       })
       managed_policy_arns = []
-      custom_policy_names = ["secrets-manager-access", "dynamodb-access-v2"]
+      custom_policy_names = ["secrets-manager-access", "dynamodb-access-v2", "s3-access", "lambda-invoke-access"]
+    },
+    {
+      name                = "codebuild-role"
+      assume_role_policy  = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Action = "sts:AssumeRole"
+            Effect = "Allow"
+            Principal = {
+              Service = "codebuild.amazonaws.com"
+            }
+          }
+        ]
+      })
+      managed_policy_arns = ["arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"]
+      custom_policy_names = []
     }
   ]
   
@@ -110,6 +130,40 @@ module "iam" {
             Effect = "Allow"
             Action = [
               "dynamodb:*"
+            ]
+            Resource = [
+              "arn:aws:dynamodb:ap-northeast-2:${data.aws_caller_identity.current.account_id}:table/*"
+            ]
+          }
+        ]
+      })
+    },
+    {
+      name = "s3-access"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Effect = "Allow"
+            Action = [
+              "s3:PutObject"
+            ]
+            Resource = [
+              "arn:aws:s3:::*/*"
+            ]
+          }
+        ]
+      })
+    },
+    {
+      name = "lambda-invoke-access"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Effect = "Allow"
+            Action = [
+              "lambda:InvokeFunction"
             ]
             Resource = "*"
           }
@@ -194,10 +248,13 @@ module "platform_backend" {
       name      = "DYNAMODB_SERVICES_TABLE"
       valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:DYNAMODB_SERVICES_TABLE::"
     },
-
     {
       name      = "PORT"
       valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:PORT::"
+    },
+    {
+      name      = "SOURCE_BUCKET_NAME"
+      valueFrom = "arn:aws:secretsmanager:ap-northeast-2:${data.aws_caller_identity.current.account_id}:secret:haifu-server-main:SOURCE_BUCKET_NAME::"
     }
   ]
   
@@ -215,7 +272,7 @@ module "user_services" {
   container_port        = 80
   cpu                   = "256"
   memory                = "512"
-  desired_count         = 0  # No default service running
+  desired_count         = 1
   
   vpc_id                = module.vpc.vpc_id
   subnet_ids            = module.vpc.private_subnets
@@ -224,19 +281,18 @@ module "user_services" {
   execution_role_arn    = module.iam.role_arns["ecs-execution-role"]
   task_role_arn         = module.iam.role_arns["ecs-task-role"]
   
-  enable_autoscaling    = false
+  enable_autoscaling    = true
+  min_capacity          = 1
+  max_capacity          = 3
+  cpu_target_value      = 70
   
   tags = local.common_tags
 }
 
-# User deployments will be created dynamically by deployment Lambda
-# Static deployments: S3 + CloudFront via CloudFormation
-# Dynamic deployments: ECS Fargate services created on-demand
-
 module "dynamodb" {
   source = "./modules/dynamodb"
   
-  name_prefix = null
+  name_prefix = ""
   
   tables = [
     {
@@ -268,8 +324,9 @@ module "dynamodb" {
       ]
       global_secondary_indexes = [
         {
-          name     = "user-index"
-          hash_key = "user_id"
+          name            = "user-index"
+          hash_key        = "user_id"
+          range_key       = null
           projection_type = "ALL"
         }
       ]
@@ -291,31 +348,33 @@ module "dynamodb" {
       ]
       global_secondary_indexes = [
         {
-          name     = "project-index"
-          hash_key = "project_id"
+          name            = "project-index"
+          hash_key        = "project_id"
+          range_key       = null
           projection_type = "ALL"
         }
       ]
     },
     {
-      name         = "users"
-      hash_key     = "user_id"
+      name         = "snapshots"
+      hash_key     = "snapshot_id"
       range_key    = ""
       billing_mode = "PAY_PER_REQUEST"
       attributes = [
         {
-          name = "user_id"
+          name = "snapshot_id"
           type = "S"
         },
         {
-          name = "github_id"
+          name = "service_id"
           type = "S"
         }
       ]
       global_secondary_indexes = [
         {
-          name     = "github-index"
-          hash_key = "github_id"
+          name            = "service-index"
+          hash_key        = "service_id"
+          range_key       = null
           projection_type = "ALL"
         }
       ]
@@ -343,7 +402,7 @@ module "lambda" {
     },
     {
       name                           = "deployment"
-      filename                      = "lambda-functions/deployment_lambda.zip"
+      filename                      = "lambda-functions/deployment_lambda_debug.zip"
       handler                       = "deployment_lambda.handler"
       runtime                       = "python3.11"
       timeout                       = 900
@@ -377,6 +436,150 @@ module "websocket_api" {
   lambda_function_name  = module.lambda.lambda_function_names["websocket"]
   
   tags = local.common_tags
+}
+
+# API Gateway for Agent Lambda
+resource "aws_api_gateway_rest_api" "agent_api" {
+  name = "${local.name_prefix}-agent-api"
+  
+  tags = local.common_tags
+}
+
+resource "aws_api_gateway_resource" "agent_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.agent_api.id
+  parent_id   = aws_api_gateway_rest_api.agent_api.root_resource_id
+  path_part   = "{proxy+}"
+}
+
+resource "aws_api_gateway_method" "agent_proxy" {
+  rest_api_id   = aws_api_gateway_rest_api.agent_api.id
+  resource_id   = aws_api_gateway_resource.agent_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "agent_lambda" {
+  rest_api_id = aws_api_gateway_rest_api.agent_api.id
+  resource_id = aws_api_gateway_method.agent_proxy.resource_id
+  http_method = aws_api_gateway_method.agent_proxy.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${module.lambda.lambda_function_arns["agent"]}/invocations"
+}
+
+resource "aws_api_gateway_deployment" "agent_api" {
+  depends_on = [
+    aws_api_gateway_method.agent_proxy,
+    aws_api_gateway_integration.agent_lambda,
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.agent_api.id
+  stage_name  = "prod"
+}
+
+resource "aws_lambda_permission" "agent_api_gateway" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda.lambda_function_names["agent"]
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.agent_api.execution_arn}/*/*"
+}
+
+# REST API Gateway for WebSocket Lambda
+resource "aws_api_gateway_rest_api" "websocket_rest_api" {
+  name = "${local.name_prefix}-websocket-rest-api"
+  
+  tags = local.common_tags
+}
+
+resource "aws_api_gateway_resource" "websocket_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.websocket_rest_api.id
+  parent_id   = aws_api_gateway_rest_api.websocket_rest_api.root_resource_id
+  path_part   = "{proxy+}"
+}
+
+resource "aws_api_gateway_method" "websocket_proxy" {
+  rest_api_id   = aws_api_gateway_rest_api.websocket_rest_api.id
+  resource_id   = aws_api_gateway_resource.websocket_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "websocket_lambda" {
+  rest_api_id = aws_api_gateway_rest_api.websocket_rest_api.id
+  resource_id = aws_api_gateway_method.websocket_proxy.resource_id
+  http_method = aws_api_gateway_method.websocket_proxy.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${module.lambda.lambda_function_arns["websocket"]}/invocations"
+}
+
+resource "aws_api_gateway_deployment" "websocket_rest_api" {
+  depends_on = [
+    aws_api_gateway_method.websocket_proxy,
+    aws_api_gateway_integration.websocket_lambda,
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.websocket_rest_api.id
+  stage_name  = "prod"
+}
+
+resource "aws_lambda_permission" "websocket_rest_api_gateway" {
+  statement_id  = "AllowExecutionFromRestAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda.lambda_function_names["websocket"]
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.websocket_rest_api.execution_arn}/*/*"
+}
+
+# REST API Gateway for Deployment Lambda
+resource "aws_api_gateway_rest_api" "deployment_api" {
+  name = "${local.name_prefix}-deployment-api"
+  
+  tags = local.common_tags
+}
+
+resource "aws_api_gateway_resource" "deployment_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.deployment_api.id
+  parent_id   = aws_api_gateway_rest_api.deployment_api.root_resource_id
+  path_part   = "{proxy+}"
+}
+
+resource "aws_api_gateway_method" "deployment_proxy" {
+  rest_api_id   = aws_api_gateway_rest_api.deployment_api.id
+  resource_id   = aws_api_gateway_resource.deployment_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "deployment_lambda" {
+  rest_api_id = aws_api_gateway_rest_api.deployment_api.id
+  resource_id = aws_api_gateway_method.deployment_proxy.resource_id
+  http_method = aws_api_gateway_method.deployment_proxy.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${module.lambda.lambda_function_arns["deployment"]}/invocations"
+}
+
+resource "aws_api_gateway_deployment" "deployment_api" {
+  depends_on = [
+    aws_api_gateway_method.deployment_proxy,
+    aws_api_gateway_integration.deployment_lambda,
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.deployment_api.id
+  stage_name  = "prod"
+}
+
+resource "aws_lambda_permission" "deployment_api_gateway" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = module.lambda.lambda_function_names["deployment"]
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.deployment_api.execution_arn}/*/*"
 }
 
 # ECR Repository for backend
@@ -413,7 +616,7 @@ module "frontend" {
   
   name_prefix     = "${local.name_prefix}-frontend"
   domain_name     = "haifu.cloud"
-  certificate_arn = data.aws_acm_certificate.cloudfront.arn
+  certificate_arn = "arn:aws:acm:us-east-1:895169747692:certificate/30cc6903-fe92-43a0-97af-8db8d6ded87b"
   tags            = local.common_tags
 }
 
